@@ -34,4 +34,4 @@ class MemberResponse(BaseModel):
     email: str
     display_name: str
     role: Role
-    created_at: datetime
+    joined_at: datetime

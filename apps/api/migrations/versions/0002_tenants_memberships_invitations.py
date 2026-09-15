@@ -4,17 +4,26 @@ Revision ID: 0002
 Revises: 0001
 Create Date: 2026-09-15
 
-Establishes the tenant boundary itself. `plans` is global reference data, no RLS. `tenants` and
-`memberships` get the standard SELECT-gated policy from `migrations/_rls.py`; `tenants`' predicate
-also checks membership by `app.user_id` alone (no `app.tenant_id` needed) so "list my tenants" —
-run before any single tenant is in scope — works under RLS with no exception. `memberships`
-mirrors that: visible either by the currently-scoped tenant or by the caller's own user id.
+Establishes the tenant boundary itself. `plans` is global reference data, no RLS.
 
-`invitations` is the one table excluded from RLS on purpose: accepting an invite happens by
-possession of an unguessable token, before the caller is a member of (or has `app.tenant_id` set
-for) the target tenant — a predicate keyed on tenant scope can't express "authorized by token"
-the way workspace RLS can't express it in ReCore either. It stays scoped by an explicit
-`tenant_id` (or `token_hash`) filter in application code, same as before RLS existed.
+`tenants` is excluded from RLS on purpose, for the same reason ReCore excludes `workspaces`: more
+than one legitimate read spans a scope no single-tenant predicate can express. "List my tenants"
+runs before any tenant is in scope at all. Worse, previewing or accepting an invitation — by
+design, reachable before the caller is a member of the target tenant, sometimes before they even
+have an account — needs to read that *other* tenant's name, and no predicate keyed on "the caller's
+own tenants" can grant that without also granting it to every other tenant the invitation doesn't
+name. It stays scoped by an explicit `id`/`slug` filter joined through the caller's own membership,
+or through the invitation's own `tenant_id`, in application code — see `services/tenants.py` and
+`services/invitations.py`.
+
+`memberships` keeps the standard SELECT-gated policy from `migrations/_rls.py`, with a predicate
+that also matches by `app.user_id` alone: visible either by the currently-scoped tenant or by the
+caller's own user id, which is what makes "list my tenants" and "am I a member of this tenant"
+work without needing `app.tenant_id` set first.
+
+`invitations` is excluded from RLS for the token/pre-membership reason above, same as ReCore's
+own `invitations` table. It stays scoped by an explicit `tenant_id` (or `token_hash`) filter in
+application code.
 
 `audit_logs` needs no such exception here, unlike ReCore's: every tenant this app ever writes an
 audit row for already has a known id by the time the row is written — `services/tenants.py`
@@ -181,12 +190,6 @@ def upgrade() -> None:
     )
     op.create_index("ix_audit_logs_tenant_id", "audit_logs", ["tenant_id"])
 
-    enable_tenant_rls(
-        "tenants",
-        select_predicate=(
-            f"id = {TENANT_GUC} OR id IN (SELECT tenant_id FROM memberships WHERE user_id = {USER_GUC})"
-        ),
-    )
     enable_tenant_rls("memberships", select_predicate=f"tenant_id = {TENANT_GUC} OR user_id = {USER_GUC}")
     enable_tenant_rls("audit_logs")
 
@@ -194,7 +197,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     disable_tenant_rls("audit_logs")
     disable_tenant_rls("memberships")
-    disable_tenant_rls("tenants")
     op.drop_table("audit_logs")
     op.drop_table("invitations")
     op.drop_table("memberships")

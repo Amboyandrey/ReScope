@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -54,7 +55,7 @@ class Company(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     profile_status: Mapped[ProfileStatus] = mapped_column(
         Enum(ProfileStatus, name="profile_status"), default=ProfileStatus.PENDING
     )
-    last_profiled_at: Mapped[datetime | None] = mapped_column(default=None)
+    last_profiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
 
 

@@ -1,8 +1,24 @@
-"""Adding, listing, viewing, and deleting companies — plus the SSRF guard on the domain field."""
+"""Adding, listing, viewing, and deleting companies — plus the SSRF guard on the domain field.
 
+Scraping itself is stubbed out (a no-op): these tests are about the API surface, not the worker
+or the pipeline — see test_discovery.py, test_extraction.py, and (once it exists) a dedicated
+pipeline test for that.
+"""
+
+import uuid
+
+import pytest
 from httpx import AsyncClient
 
 from tests.helpers import create_tenant, csrf_headers, signup, tenant_headers
+
+
+@pytest.fixture(autouse=True)
+def _stub_enqueue(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _noop_enqueue(*, job_id: uuid.UUID, tenant_id: uuid.UUID, company_id: uuid.UUID) -> None:
+        del job_id, tenant_id, company_id
+
+    monkeypatch.setattr("app.routers.v1.companies.enqueue_scrape_job", _noop_enqueue)
 
 
 async def _setup_tenant(
@@ -22,7 +38,7 @@ async def test_create_company_normalizes_domain(client: AsyncClient) -> None:
     body = response.json()
     assert body["domain"] == "example.com"
     assert body["website_url"] == "https://example.com"
-    assert body["profile_status"] == "pending"
+    assert body["profile_status"] == "scraping"
 
 
 async def test_duplicate_domain_in_same_tenant_is_rejected(client: AsyncClient) -> None:
@@ -101,3 +117,32 @@ async def test_companies_are_isolated_between_tenants(client: AsyncClient) -> No
     headers_b = await _setup_tenant(client, email="owner-b@example.com", tenant_name="Tenant B")
     listed_b = await client.get("/api/v1/tenants/current/companies", headers=headers_b)
     assert listed_b.json() == []
+
+
+async def test_scrape_jobs_are_listed_for_the_company(client: AsyncClient) -> None:
+    headers = await _setup_tenant(client)
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers
+    )
+    company_id = created.json()["id"]
+
+    jobs = await client.get(f"/api/v1/tenants/current/companies/{company_id}/scrape-jobs", headers=headers)
+    assert jobs.status_code == 200
+    [job] = jobs.json()
+    assert job["status"] == "queued"
+    assert job["mode"] == "fast"
+
+
+async def test_scrape_jobs_404_for_a_company_in_another_tenant(client: AsyncClient) -> None:
+    headers_a = await _setup_tenant(client, email="owner-a@example.com", tenant_name="Tenant A")
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers_a
+    )
+    company_id = created.json()["id"]
+    client.cookies.clear()
+
+    headers_b = await _setup_tenant(client, email="owner-b@example.com", tenant_name="Tenant B")
+    response = await client.get(
+        f"/api/v1/tenants/current/companies/{company_id}/scrape-jobs", headers=headers_b
+    )
+    assert response.status_code == 404

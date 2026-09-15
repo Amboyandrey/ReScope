@@ -64,3 +64,20 @@ class CompanyDetailResponse(CompanyResponse):
 
     offerings: list[OfferingResponse]
     competencies: list[CompetencyResponse]
+
+
+class ScrapeJobResponse(BaseModel):
+    id: uuid.UUID
+    mode: str
+    status: str
+    tier_reached: int
+    pages_fetched: int
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+    error: str | None
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}

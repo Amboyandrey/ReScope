@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, status
 from app.core.errors import InsufficientRole
 from app.deps.db import DbSession
 from app.deps.tenant import TenantCtx, require_role
-from app.models import Role
+from app.models import ProfileStatus, Role
 from app.schemas.company import (
     CompanyDetailResponse,
     CompanyResponse,
     CompetencyResponse,
     CreateCompanyRequest,
     OfferingResponse,
+    ScrapeJobResponse,
 )
 from app.services.audit import record_audit
 from app.services.companies import (
@@ -25,6 +26,8 @@ from app.services.companies import (
     get_offerings,
     list_companies,
 )
+from app.services.jobs import enqueue_scrape_job
+from app.services.scrape_jobs import create_scrape_job, list_scrape_jobs
 
 router = APIRouter(prefix="/tenants/current/companies", tags=["companies"])
 
@@ -34,8 +37,10 @@ _MemberCtx = Annotated[TenantCtx, Depends(require_role(Role.MEMBER))]
 
 @router.post("", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
 async def create(body: CreateCompanyRequest, ctx: _MemberCtx, db: DbSession) -> CompanyResponse:
-    """Add a company to the current tenant by its domain or website URL."""
+    """Add a company to the current tenant and queue its first scrape."""
     company = await create_company(db, tenant_id=ctx.tenant.id, created_by=ctx.user, raw_domain=body.domain)
+    job = await create_scrape_job(db, tenant_id=ctx.tenant.id, company_id=company.id)
+    company.profile_status = ProfileStatus.SCRAPING
     await record_audit(
         db,
         tenant_id=ctx.tenant.id,
@@ -45,6 +50,12 @@ async def create(body: CreateCompanyRequest, ctx: _MemberCtx, db: DbSession) -> 
         target_id=str(company.id),
         metadata={"domain": company.domain},
     )
+    # Enqueued here, ahead of this request's own commit (which get_db() runs once this handler
+    # returns) — the same ordering ReCore's own connector-indexing trigger uses. In the rare case
+    # the worker dequeues and looks the job up before that commit lands, it finds nothing and
+    # returns without error; Redis enqueue plus worker pickup latency make that window small
+    # enough in practice not to need more than this note.
+    await enqueue_scrape_job(job_id=job.id, tenant_id=ctx.tenant.id, company_id=company.id)
     return CompanyResponse.model_validate(company)
 
 
@@ -66,6 +77,14 @@ async def get_one(company_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession) -> Comp
         offerings=[OfferingResponse.model_validate(o) for o in offerings],
         competencies=[CompetencyResponse.model_validate(c) for c in competencies],
     )
+
+
+@router.get("/{company_id}/scrape-jobs", response_model=list[ScrapeJobResponse])
+async def list_jobs(company_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession) -> list[ScrapeJobResponse]:
+    """List a company's scrape jobs, most recent first — what a job-status UI polls."""
+    await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)  # 404s if not this tenant's
+    jobs = await list_scrape_jobs(db, tenant_id=ctx.tenant.id, company_id=company_id)
+    return [ScrapeJobResponse.model_validate(j) for j in jobs]
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)

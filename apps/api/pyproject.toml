@@ -19,6 +19,10 @@ dependencies = [
     "orjson>=3.10",
     "arq>=0.26",
     "pgvector>=0.3",
+    "playwright>=1.62.0",
+    "markdownify>=1.2.3",
+    "beautifulsoup4>=4.15.0",
+    "anthropic>=1.5.0",
 ]
 
 [dependency-groups]

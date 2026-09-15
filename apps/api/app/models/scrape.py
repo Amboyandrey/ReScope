@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
@@ -60,9 +61,9 @@ class ScrapeJob(Base, UUIDPrimaryKeyMixin):
     tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
     error: Mapped[str | None] = mapped_column(default=None)
-    queued_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    started_at: Mapped[datetime | None] = mapped_column(default=None)
-    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class ScrapePage(Base, UUIDPrimaryKeyMixin):
@@ -81,7 +82,7 @@ class ScrapePage(Base, UUIDPrimaryKeyMixin):
     status_code: Mapped[int | None] = mapped_column(Integer, default=None)
     content_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     markdown: Mapped[str | None] = mapped_column(default=None)
-    fetched_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ProfileChange(Base, UUIDPrimaryKeyMixin):
@@ -101,4 +102,4 @@ class ProfileChange(Base, UUIDPrimaryKeyMixin):
     company_id: Mapped[uuid.UUID] = mapped_column()
     job_id: Mapped[uuid.UUID] = mapped_column()
     diff: Mapped[dict[str, object]] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

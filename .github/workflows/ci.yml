@@ -44,6 +44,9 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy app
+      # Only Chromium's browser binary, not --with-deps: GitHub's ubuntu-latest runner already
+      # ships the system libraries it needs, unlike this project's own dev sandbox.
+      - run: uv run playwright install chromium
       - run: uv run pytest -q
 
   web:

@@ -3,8 +3,12 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { ChangesSection } from "@/components/changes-section";
+import { ContactsSection } from "@/components/contacts-section";
 import { EvidenceList } from "@/components/evidence-list";
+import { NotesSection } from "@/components/notes-section";
 import { StatusBadge } from "@/components/status-badge";
+import { TagsSection } from "@/components/tags-section";
 import {
   type CompanyDetail,
   type ScrapeJob,
@@ -146,6 +150,11 @@ export default function CompanyProfilePage() {
           </ul>
         )}
       </section>
+
+      <TagsSection companyId={companyId} />
+      <ChangesSection companyId={companyId} />
+      <ContactsSection companyId={companyId} />
+      <NotesSection companyId={companyId} />
 
       {similar.length > 0 && (
         <section className="mt-8">

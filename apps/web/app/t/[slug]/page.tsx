@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { FormError } from "@/components/form-error";
+import { SavedSearchesSection } from "@/components/saved-searches-section";
 import { StatusBadge } from "@/components/status-badge";
 import { AuthError } from "@/lib/auth-client";
 import { type Company, type SearchHit, createCompany, listCompanies, searchCompanies } from "@/lib/company-client";
@@ -94,18 +95,23 @@ export default function CompaniesPage() {
     }
   }
 
-  async function onSearchSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) {
+  async function runSearch(q: string) {
+    setQuery(q);
+    if (!q.trim()) {
       setResults(null);
       return;
     }
     setSearching(true);
     try {
-      setResults(await searchCompanies(query));
+      setResults(await searchCompanies(q));
     } finally {
       setSearching(false);
     }
+  }
+
+  async function onSearchSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await runSearch(query);
   }
 
   return (
@@ -159,6 +165,7 @@ export default function CompaniesPage() {
           {searching ? "Searching…" : "Search"}
         </button>
       </form>
+      <SavedSearchesSection currentQuery={query} onRun={runSearch} />
 
       {results !== null ? (
         <>

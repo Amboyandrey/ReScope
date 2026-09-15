@@ -9,7 +9,7 @@ from app.core.errors import InsufficientRole
 from app.core.storage import read_screenshot
 from app.deps.db import DbSession
 from app.deps.tenant import TenantCtx, require_role
-from app.models import ProfileStatus, Role
+from app.models import ProfileStatus, Role, ScrapeMode
 from app.schemas.company import (
     CompanyDetailResponse,
     CompanyResponse,
@@ -74,6 +74,27 @@ async def create(body: CreateCompanyRequest, ctx: _MemberCtx, db: DbSession) -> 
     # the worker dequeues and looks the job up before that commit lands, it finds nothing and
     # returns without error; Redis enqueue plus worker pickup latency make that window small
     # enough in practice not to need more than this note.
+    await enqueue_scrape_job(job_id=job.id, tenant_id=ctx.tenant.id, company_id=company.id)
+    return CompanyResponse.model_validate(company)
+
+
+@router.post("/{company_id}/reprofile", response_model=CompanyResponse)
+async def reprofile(company_id: uuid.UUID, ctx: _MemberCtx, db: DbSession) -> CompanyResponse:
+    """Queue a fresh scrape of an existing company on demand, rather than waiting for its plan's
+    scheduled interval (docs/PLAN.md §11) — the same quota and killswitch checks as adding one."""
+    company = await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)
+    await assert_scraping_not_paused(db)
+    await assert_within_quota(db, tenant=ctx.tenant, mode=ScrapeMode.FAST)
+    job = await create_scrape_job(db, tenant_id=ctx.tenant.id, company_id=company.id, mode=ScrapeMode.FAST)
+    company.profile_status = ProfileStatus.SCRAPING
+    await record_audit(
+        db,
+        tenant_id=ctx.tenant.id,
+        actor_id=ctx.user.id,
+        action="company.reprofiled",
+        target_type="company",
+        target_id=str(company.id),
+    )
     await enqueue_scrape_job(job_id=job.id, tenant_id=ctx.tenant.id, company_id=company.id)
     return CompanyResponse.model_validate(company)
 

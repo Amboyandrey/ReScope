@@ -9,7 +9,7 @@ from app.core.csrf import csrf_middleware
 from app.core.errors import AppError
 from app.core.logging import configure_logging
 from app.core.middleware import request_context_middleware, security_headers_middleware
-from app.routers.v1 import auth, health
+from app.routers.v1 import audit, auth, health, tenants
 
 settings = get_settings()
 configure_logging(settings.debug)
@@ -33,6 +33,8 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(tenants.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
 
 
 @app.exception_handler(AppError)

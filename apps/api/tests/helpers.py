@@ -18,3 +18,15 @@ async def signup(
 def csrf_headers(client: AsyncClient) -> dict[str, str]:
     """The header a mutating request must carry, echoing the CSRF cookie the client holds."""
     return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE, "")}
+
+
+async def create_tenant(client: AsyncClient, name: str = "Acme Inc", slug: str | None = None) -> Response:
+    """Create a tenant through the API as whichever user the client is currently signed in as."""
+    return await client.post(
+        "/api/v1/tenants", json={"name": name, "slug": slug}, headers=csrf_headers(client)
+    )
+
+
+def tenant_headers(client: AsyncClient, slug: str) -> dict[str, str]:
+    """The header that puts a request in a tenant's scope, on top of any CSRF header it also needs."""
+    return {**csrf_headers(client), "X-Tenant-Slug": slug}

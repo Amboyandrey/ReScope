@@ -90,7 +90,12 @@ def apply_migrations() -> None:
 async def clean_state() -> AsyncGenerator[None]:
     """Truncate every application table, flush Redis, and drop both connection pools after each
     test. pytest-asyncio gives every test its own event loop, but the engine and Redis client are
-    module-level singletons — a connection left checked-in from this loop would fail in the next."""
+    module-level singletons — a connection left checked-in from this loop would fail in the next.
+
+    `plans` is deliberately NOT truncated: it's seed reference data the `0002` migration inserts
+    once, and `apply_migrations` only runs `alembic upgrade head` once per session — truncating it
+    here would permanently empty it for every test after the first, since there's no migration
+    left to reseed it once the database is already at head."""
     yield
     # Truncation needs the owner role: the app role has CRUD only, and RLS would hide rows anyway.
     owner = create_async_engine(get_settings().database_url, poolclass=NullPool)
@@ -98,7 +103,7 @@ async def clean_state() -> AsyncGenerator[None]:
         rows = await conn.execute(
             text(
                 "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+                "WHERE schemaname = 'public' AND tablename NOT IN ('alembic_version', 'plans')"
             )
         )
         tables = [row[0] for row in rows]

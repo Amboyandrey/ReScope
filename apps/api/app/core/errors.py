@@ -83,3 +83,18 @@ class InvitationInvalid(AppError):
 class InvitationNotFound(AppError):
     status_code = 404
     detail = "Invitation not found."
+
+
+class CompanyNotFound(AppError):
+    status_code = 404
+    detail = "Company not found."
+
+
+class CompanyAlreadyTracked(AppError):
+    status_code = 409
+    detail = "This company is already tracked in this workspace."
+
+
+class InvalidDomain(AppError):
+    status_code = 422
+    detail = "Enter a valid company website or domain."

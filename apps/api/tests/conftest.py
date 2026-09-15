@@ -12,31 +12,37 @@ import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 API_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _force_test_database_url() -> None:
-    """Rewrite `DATABASE_URL` to a `_test`-suffixed database, in the environment itself, before
-    `app.core.config` ever loads.
-
-    The autouse fixture below TRUNCATEs every table after each test. Forcing a separate database
-    name here makes it structurally impossible for the suite to wipe a dev stack's data, rather
-    than relying on every `.env` being set up correctly.
-    """
-    base = os.environ.get("DATABASE_URL", "postgresql+asyncpg://rescope:rescope@localhost:5433/rescope")
-    scheme, netloc, path, query, fragment = urlsplit(base)
+def _with_test_db_name(url: str) -> str:
+    scheme, netloc, path, query, fragment = urlsplit(url)
     db_name = path.lstrip("/")
     if not db_name.endswith("_test"):
-        os.environ["DATABASE_URL"] = urlunsplit((scheme, netloc, f"/{db_name}_test", query, fragment))
-    # Tests exercise RLS through the app role when one is configured, so point it at the same db.
-    app_url = os.environ.get("APP_DATABASE_URL")
-    if app_url:
-        scheme, netloc, path, query, fragment = urlsplit(app_url)
-        db_name = path.lstrip("/")
-        if not db_name.endswith("_test"):
-            os.environ["APP_DATABASE_URL"] = urlunsplit((scheme, netloc, f"/{db_name}_test", query, fragment))
+        path = f"/{db_name}_test"
+    return urlunsplit((scheme, netloc, path, query, fragment))
+
+
+def _force_test_database_urls() -> None:
+    """Rewrite `DATABASE_URL` to a `_test`-suffixed database, in the environment itself, before
+    `app.core.config` ever loads — and point `APP_DATABASE_URL` at the low-privilege role on that
+    same database.
+
+    The autouse fixture below TRUNCATEs every table after each test. Forcing a separate database
+    name makes it structurally impossible for the suite to wipe a dev stack's data. Running the
+    app under `rescope_app` (the role the RLS migration creates) means the suite exercises
+    row-level security for real instead of as the RLS-exempt owner.
+    """
+    base = os.environ.get("DATABASE_URL", "postgresql+asyncpg://rescope:rescope@localhost:5433/rescope")
+    os.environ["DATABASE_URL"] = _with_test_db_name(base)
+    scheme, netloc, path, query, fragment = urlsplit(os.environ["DATABASE_URL"])
+    host = netloc.rsplit("@", 1)[-1]
+    os.environ["APP_DATABASE_URL"] = urlunsplit(
+        (scheme, f"rescope_app:rescope_app_dev_only@{host}", path, query, fragment)
+    )
 
 
 def _force_test_redis_db_index() -> None:
@@ -63,11 +69,12 @@ async def _ensure_database_exists(url: str) -> None:
         await conn.close()
 
 
-_force_test_database_url()
+_force_test_database_urls()
 _force_test_redis_db_index()
 asyncio.run(_ensure_database_exists(os.environ["DATABASE_URL"]))
 
 # Imported only after the overrides above: Settings is lru_cache'd on first call.
+from app.core.config import get_settings  # noqa: E402
 from app.core.db import async_session_factory, engine  # noqa: E402
 from app.core.redis import close_redis, get_redis  # noqa: E402
 from app.main import app  # noqa: E402
@@ -85,7 +92,9 @@ async def clean_state() -> AsyncGenerator[None]:
     test. pytest-asyncio gives every test its own event loop, but the engine and Redis client are
     module-level singletons — a connection left checked-in from this loop would fail in the next."""
     yield
-    async with engine.begin() as conn:
+    # Truncation needs the owner role: the app role has CRUD only, and RLS would hide rows anyway.
+    owner = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with owner.begin() as conn:
         rows = await conn.execute(
             text(
                 "SELECT tablename FROM pg_tables "
@@ -96,6 +105,7 @@ async def clean_state() -> AsyncGenerator[None]:
         if tables:
             joined = ", ".join(f'"{t}"' for t in tables)
             await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+    await owner.dispose()
     await get_redis().flushdb()
     await close_redis()
     await engine.dispose()
@@ -110,7 +120,8 @@ async def db() -> AsyncGenerator[AsyncSession]:
 
 @pytest.fixture
 async def client() -> AsyncGenerator[AsyncClient]:
-    """An httpx client bound to the ASGI app, with the root domain as its base URL."""
+    """An httpx client bound to the ASGI app at the API's own subdomain of the root domain, so
+    the `Domain=.rescope.localhost` cookies the API issues are accepted and sent back."""
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://rescope.localhost") as c:
+    async with AsyncClient(transport=transport, base_url="http://api.rescope.localhost") as c:
         yield c

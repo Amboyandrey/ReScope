@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 // The API origin the browser fetches — a different origin from the web app in every environment,
 // so the CSP's connect-src has to name it.
-const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? "http://api.rescope.localhost:8000";
 
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },

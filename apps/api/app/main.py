@@ -5,19 +5,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
+from app.core.csrf import csrf_middleware
 from app.core.errors import AppError
 from app.core.logging import configure_logging
 from app.core.middleware import request_context_middleware, security_headers_middleware
-from app.routers.v1 import health
+from app.routers.v1 import auth, health
 
 settings = get_settings()
 configure_logging(settings.debug)
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
-# Order matters: security headers wrap everything, then request context, then CORS closest to the app.
+# Order matters: security headers wrap everything, then request context, CSRF, then CORS closest to the app.
 app.middleware("http")(security_headers_middleware)
 app.middleware("http")(request_context_middleware)
+app.middleware("http")(csrf_middleware)
 # Every tenant is a subdomain of the root domain, so tenant origins are matched by regex rather
 # than enumerated — a new tenant needs no config change to call the API from its own origin.
 app.add_middleware(
@@ -30,6 +32,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
 
 
 @app.exception_handler(AppError)

@@ -70,6 +70,22 @@ services:
       api:
         condition: service_started
 
+  # Runs Tier 0 discovery and Tier 1 render + extraction (Chromium included) on its own queue —
+  # see app/services/jobs.py for why it never shares work with `worker` above. Heaviest image in
+  # the stack by far (Chromium plus its system libraries); expect the first build to take a while.
+  scraper:
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.scraper
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rescope:rescope@postgres:5432/rescope
+      APP_DATABASE_URL: postgresql+asyncpg://rescope_app:rescope_app_dev_only@postgres:5432/rescope
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_started
+
   web:
     build:
       context: ../apps/web

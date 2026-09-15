@@ -17,7 +17,7 @@ async def signup(
 
 def csrf_headers(client: AsyncClient) -> dict[str, str]:
     """The header a mutating request must carry, echoing the CSRF cookie the client holds."""
-    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE, "")}
+    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE, "") or ""}
 
 
 async def create_tenant(client: AsyncClient, name: str = "Acme Inc", slug: str | None = None) -> Response:

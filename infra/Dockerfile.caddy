@@ -1,0 +1,9 @@
+# Stock Caddy has no DNS provider plugins built in, and a wildcard cert (`*.<domain>`) can only be
+# issued via the DNS-01 challenge — HTTP-01 can't prove ownership of a name that doesn't exist yet.
+# xcaddy compiles the Cloudflare DNS module in; swap the `xcaddy build` line (and the Caddyfile's
+# `dns cloudflare` directive) for github.com/caddy-dns/<provider> if you're on a different one.
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

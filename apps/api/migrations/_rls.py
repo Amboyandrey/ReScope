@@ -19,11 +19,17 @@ Lessons baked in, each found by running against a real database rather than reas
   explicit, permissive write policy rather than relying on the SELECT one.
 """
 
+import os
+
 from alembic import op
 
 APP_ROLE = "rescope_app"
-# Dev-only, fine to commit. A role's password is cluster-wide, so rotate it for any real deploy.
-APP_ROLE_PASSWORD = "rescope_app_dev_only"
+# Read once, at migration time only — never by the running app, which authenticates through
+# APP_DATABASE_URL instead. The fallback is dev-only and fine to commit; a real deploy sets
+# RESCOPE_APP_ROLE_PASSWORD before the first `alembic upgrade head` ever creates the role (a
+# role's password is cluster-wide, and this only runs the `CREATE ROLE` once — rotating it
+# afterward needs a manual `ALTER ROLE rescope_app PASSWORD '...'` to match).
+APP_ROLE_PASSWORD = os.environ.get("RESCOPE_APP_ROLE_PASSWORD", "rescope_app_dev_only")
 
 TENANT_GUC = "NULLIF(current_setting('app.tenant_id', true), '')::uuid"
 USER_GUC = "NULLIF(current_setting('app.user_id', true), '')::uuid"

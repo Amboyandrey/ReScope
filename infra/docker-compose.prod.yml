@@ -1,0 +1,155 @@
+# Production stack: the same services as docker-compose.yml, fronted by Caddy instead of bare
+# host ports. Only Caddy publishes anything to the outside world; every other service is reachable
+# solely from inside the compose network. Configure via a `.env` file next to this one — see
+# .env.prod.example for every variable it reads.
+#
+#   docker compose -f infra/docker-compose.prod.yml --env-file infra/.env up -d --build
+#   docker compose -f infra/docker-compose.prod.yml exec api /app/.venv/bin/python -m app.scripts.seed_demo
+name: rescope
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rescope
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: rescope
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rescope"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    command: ["--model-id", "Qwen/Qwen3-Embedding-0.6B", "--auto-truncate", "--max-batch-tokens", "2048"]
+    volumes:
+      - tei_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rescope:${POSTGRES_PASSWORD}@postgres:5432/rescope
+      APP_DATABASE_URL: postgresql+asyncpg://rescope_app:${RESCOPE_APP_ROLE_PASSWORD}@postgres:5432/rescope
+      RESCOPE_APP_ROLE_PASSWORD: ${RESCOPE_APP_ROLE_PASSWORD}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+      ROOT_DOMAIN: ${DOMAIN}
+      CORS_ORIGINS: '["https://${DOMAIN}"]'
+      DEBUG: "false"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      EMBEDDINGS_URL: http://embeddings:80
+    volumes:
+      - scrape_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.api
+    command: ["arq", "app.workers.main.WorkerSettings"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rescope:${POSTGRES_PASSWORD}@postgres:5432/rescope
+      APP_DATABASE_URL: postgresql+asyncpg://rescope_app:${RESCOPE_APP_ROLE_PASSWORD}@postgres:5432/rescope
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: production
+      ROOT_DOMAIN: ${DOMAIN}
+      DEBUG: "false"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      EMBEDDINGS_URL: http://embeddings:80
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  scraper:
+    build:
+      context: ../apps/api
+      dockerfile: ../../infra/Dockerfile.scraper
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rescope:${POSTGRES_PASSWORD}@postgres:5432/rescope
+      APP_DATABASE_URL: postgresql+asyncpg://rescope_app:${RESCOPE_APP_ROLE_PASSWORD}@postgres:5432/rescope
+      REDIS_URL: redis://redis:6379/0
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      EMBEDDINGS_URL: http://embeddings:80
+    volumes:
+      - scrape_storage:/app/storage
+    depends_on:
+      api:
+        condition: service_started
+      embeddings:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: ../../infra/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: https://api.${DOMAIN}
+        NEXT_PUBLIC_ROOT_DOMAIN: ${DOMAIN}
+        NEXT_PUBLIC_ROOT_URL: https://${DOMAIN}
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  tei_data:
+  scrape_storage:
+  caddy_data:
+  caddy_config:

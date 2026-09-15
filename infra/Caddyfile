@@ -1,0 +1,21 @@
+# Production reverse proxy: terminates TLS for the root domain and every tenant subdomain, and
+# routes `api.<domain>` to the API container before anything reaches Next.js — the same split
+# dev gets for free from two different ports (see docker-compose.yml's ROOT_DOMAIN/API_URL split
+# and apps/web/proxy.ts, which only ever sees the root domain and its tenant subdomains, never
+# `api.`). A wildcard cert needs the DNS-01 challenge, which needs a Caddy build with a DNS
+# provider plugin — see Dockerfile.caddy; swap the `dns cloudflare` line below for your own
+# provider's Caddy module if you're not on Cloudflare.
+{
+	email {$ACME_EMAIL}
+}
+
+api.{$DOMAIN} {
+	reverse_proxy api:8000
+}
+
+{$DOMAIN}, *.{$DOMAIN} {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy web:3000
+}

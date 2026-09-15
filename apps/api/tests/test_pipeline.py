@@ -9,6 +9,7 @@ pipeline's own graceful-degradation path instead — neither actually exercises 
 """
 
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,8 +25,11 @@ from app.models import (
     Offering,
     ProfileStatus,
     ScrapeJob,
+    ScrapePage,
     ScrapeStatus,
     SourceKind,
+    UsageEvent,
+    UsageKind,
 )
 from app.models.embedding import EMBEDDING_DIMENSIONS
 from app.scraping import pipeline
@@ -60,14 +64,18 @@ def _stub_embed_texts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pipeline, "embed_texts", _fake_embed_texts)
 
 
-async def _create_company(client: AsyncClient, db: AsyncSession) -> tuple[Company, ScrapeJob]:
+async def _create_company(
+    client: AsyncClient, db: AsyncSession, *, mode: str = "fast"
+) -> tuple[Company, ScrapeJob]:
     from tests.helpers import signup
 
     await signup(client)
     tenant = (await create_tenant(client)).json()
     headers = tenant_headers(client, tenant["slug"])
     created = await client.post(
-        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers
+        "/api/v1/tenants/current/companies",
+        json={"domain": "example.com", "mode": mode},
+        headers=headers,
     )
     company_id = uuid.UUID(created.json()["id"])
     tenant_id = uuid.UUID(tenant["id"])
@@ -245,3 +253,58 @@ async def test_embedding_failure_does_not_fail_the_job(client: AsyncClient, db: 
 
     embeddings = list((await db.scalars(select(Embedding).where(Embedding.company_id == company.id))).all())
     assert embeddings == []
+
+
+async def test_deep_mode_runs_tier_2_and_records_a_separate_usage_event(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deep-mode job explores visually in addition to Tier 1, reaches tier_reached=2, stores
+    the exploration's screenshot, and bills it as its own DEEP_PROFILE event — separate from the
+    PROFILE event the extraction call itself still generates."""
+    from app.core import storage as storage_module
+    from app.scraping.visual_agent import ExplorationResult
+
+    monkeypatch.setattr(storage_module.settings, "storage_dir", str(tmp_path))
+    company, job = await _create_company(client, db, mode="deep")
+
+    fake_result = ExtractionResult(
+        profile=ExtractedProfile(overview="Acme.", offerings=[], competencies=[]),
+        tokens_in=10,
+        tokens_out=5,
+    )
+    visual_page = RenderedPage(
+        url="https://example.com",
+        final_url="https://example.com/tab-2",
+        status_code=None,
+        markdown="# Revealed content",
+        content_hash="deadbeef",
+        screenshot=b"fake-png-bytes",
+    )
+    exploration = ExplorationResult(pages=[visual_page], tokens_in=300, tokens_out=60)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=[]))
+        mp.setattr(pipeline, "explore_visually", AsyncMock(return_value=exploration))
+        mp.setattr(pipeline, "extract_profile", AsyncMock(return_value=fake_result))
+        await pipeline.run_scrape_job(db, job=job, company=company)
+        await db.commit()
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed_job = await db.get(ScrapeJob, job.id)
+    assert refreshed_job is not None
+    assert refreshed_job.tier_reached == 2
+    assert refreshed_job.pages_fetched == 1
+    assert refreshed_job.tokens_in == 310  # 300 (visual) + 10 (extraction)
+    assert refreshed_job.tokens_out == 65  # 60 (visual) + 5 (extraction)
+    assert float(refreshed_job.cost_usd) > 0
+
+    events = list((await db.scalars(select(UsageEvent).where(UsageEvent.job_id == job.id))).all())
+    kinds = {e.kind: e for e in events}
+    assert set(kinds) == {UsageKind.DEEP_PROFILE, UsageKind.PROFILE}
+    assert kinds[UsageKind.DEEP_PROFILE].tokens_in == 300
+    assert kinds[UsageKind.PROFILE].tokens_in == 10
+
+    pages = list((await db.scalars(select(ScrapePage).where(ScrapePage.job_id == job.id))).all())
+    assert len(pages) == 1
+    assert pages[0].screenshot_key is not None
+    assert (tmp_path / pages[0].screenshot_key).read_bytes() == b"fake-png-bytes"

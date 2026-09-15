@@ -81,10 +81,10 @@ export async function listCompanies(): Promise<Company[]> {
   return (await res.json()) as Company[];
 }
 
-export async function createCompany(domain: string): Promise<Company> {
+export async function createCompany(domain: string, mode: "fast" | "deep" = "fast"): Promise<Company> {
   const res = await tenantFetch("/api/v1/tenants/current/companies", {
     method: "POST",
-    body: JSON.stringify({ domain }),
+    body: JSON.stringify({ domain, mode }),
   });
   await throwIfNotOk(res);
   return (await res.json()) as Company;

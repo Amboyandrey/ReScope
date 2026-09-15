@@ -98,3 +98,13 @@ class SearchHitResponse(BaseModel):
 class SimilarCompanyResponse(BaseModel):
     company: CompanyResponse
     distance: float
+
+
+class ScrapePageResponse(BaseModel):
+    id: uuid.UUID
+    url: str
+    status_code: int | None
+    has_screenshot: bool
+    fetched_at: datetime
+
+    model_config = {"from_attributes": True}

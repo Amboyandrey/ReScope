@@ -82,6 +82,9 @@ class ScrapePage(Base, UUIDPrimaryKeyMixin):
     status_code: Mapped[int | None] = mapped_column(Integer, default=None)
     content_hash: Mapped[str | None] = mapped_column(String(64), default=None)
     markdown: Mapped[str | None] = mapped_column(default=None)
+    # Set only for a page Tier 2's visual agent actually navigated to and screenshotted — Tier 1's
+    # own text-only pages leave this null. A storage key (see app/core/storage.py), not the bytes.
+    screenshot_key: Mapped[str | None] = mapped_column(String(255), default=None)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -67,6 +67,11 @@ services:
       DEBUG: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMBEDDINGS_URL: http://embeddings:80
+    volumes:
+      # Shared with `scraper` below: it writes Tier 2's screenshots here, the API reads them back
+      # to serve one on request — the same bind-mounted-volume pattern ReCore uses for chat
+      # attachments, one writer and one reader on the same files rather than a network store.
+      - scrape_storage:/app/storage
     ports:
       - "8000:8000"
     depends_on:
@@ -105,6 +110,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMBEDDINGS_URL: http://embeddings:80
+    volumes:
+      - scrape_storage:/app/storage
     depends_on:
       api:
         condition: service_started
@@ -134,3 +141,4 @@ services:
 volumes:
   postgres_data:
   tei_data:
+  scrape_storage:

@@ -5,7 +5,13 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ScrapeJob, ScrapeMode
+from app.core.errors import AppError
+from app.models import ScrapeJob, ScrapeMode, ScrapePage
+
+
+class ScrapePageNotFound(AppError):
+    status_code = 404
+    detail = "Scrape page not found."
 
 
 async def create_scrape_job(
@@ -29,3 +35,26 @@ async def list_scrape_jobs(
         .order_by(ScrapeJob.queued_at.desc())
     )
     return list((await db.scalars(stmt)).all())
+
+
+async def list_scrape_pages(db: AsyncSession, *, tenant_id: uuid.UUID, job_id: uuid.UUID) -> list[ScrapePage]:
+    """List the pages one scrape job read, oldest first — the raw evidence behind its extraction."""
+    stmt = (
+        select(ScrapePage)
+        .where(ScrapePage.tenant_id == tenant_id, ScrapePage.job_id == job_id)
+        .order_by(ScrapePage.fetched_at)
+    )
+    return list((await db.scalars(stmt)).all())
+
+
+async def get_scrape_page(
+    db: AsyncSession, *, tenant_id: uuid.UUID, job_id: uuid.UUID, page_id: uuid.UUID
+) -> ScrapePage:
+    page = await db.scalar(
+        select(ScrapePage).where(
+            ScrapePage.tenant_id == tenant_id, ScrapePage.job_id == job_id, ScrapePage.id == page_id
+        )
+    )
+    if page is None:
+        raise ScrapePageNotFound()
+    return page

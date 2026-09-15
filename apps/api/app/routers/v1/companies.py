@@ -3,9 +3,10 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 
 from app.core.errors import InsufficientRole
+from app.core.storage import read_screenshot
 from app.deps.db import DbSession
 from app.deps.tenant import TenantCtx, require_role
 from app.models import ProfileStatus, Role
@@ -16,6 +17,7 @@ from app.schemas.company import (
     CreateCompanyRequest,
     OfferingResponse,
     ScrapeJobResponse,
+    ScrapePageResponse,
 )
 from app.services.audit import record_audit
 from app.services.companies import (
@@ -29,7 +31,13 @@ from app.services.companies import (
 from app.services.jobs import enqueue_scrape_job
 from app.services.platform_settings import assert_scraping_not_paused
 from app.services.quotas import assert_within_quota
-from app.services.scrape_jobs import create_scrape_job, list_scrape_jobs
+from app.services.scrape_jobs import (
+    ScrapePageNotFound,
+    create_scrape_job,
+    get_scrape_page,
+    list_scrape_jobs,
+    list_scrape_pages,
+)
 
 router = APIRouter(prefix="/tenants/current/companies", tags=["companies"])
 
@@ -94,6 +102,39 @@ async def list_jobs(company_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession) -> li
     await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)  # 404s if not this tenant's
     jobs = await list_scrape_jobs(db, tenant_id=ctx.tenant.id, company_id=company_id)
     return [ScrapeJobResponse.model_validate(j) for j in jobs]
+
+
+@router.get("/{company_id}/scrape-jobs/{job_id}/pages", response_model=list[ScrapePageResponse])
+async def list_pages(
+    company_id: uuid.UUID, job_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession
+) -> list[ScrapePageResponse]:
+    """List the pages one scrape job read — the raw evidence behind its extraction, including
+    which of them Tier 2 also screenshotted."""
+    await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)  # 404s if not this tenant's
+    pages = await list_scrape_pages(db, tenant_id=ctx.tenant.id, job_id=job_id)
+    return [
+        ScrapePageResponse(
+            id=p.id,
+            url=p.url,
+            status_code=p.status_code,
+            has_screenshot=p.screenshot_key is not None,
+            fetched_at=p.fetched_at,
+        )
+        for p in pages
+    ]
+
+
+@router.get("/{company_id}/scrape-jobs/{job_id}/pages/{page_id}/screenshot")
+async def get_screenshot(
+    company_id: uuid.UUID, job_id: uuid.UUID, page_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession
+) -> Response:
+    """Stream back one page's Tier 2 screenshot — the actual evidence behind a visually-explored
+    fact, not just its markdown transcript."""
+    await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)  # 404s if not this tenant's
+    page = await get_scrape_page(db, tenant_id=ctx.tenant.id, job_id=job_id, page_id=page_id)
+    if page.screenshot_key is None:
+        raise ScrapePageNotFound("This page has no screenshot.")
+    return Response(content=read_screenshot(page.screenshot_key), media_type="image/png")
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)

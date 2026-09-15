@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # Platform-paid LLM key for profiling. Read from the environment only; never persisted.
     anthropic_api_key: str = Field(default="")
 
+    # The self-hosted text-embeddings-inference service (Qwen3-Embedding-0.6B, 1024 dimensions —
+    # see docs/PLAN.md §1). Not a tenant-configurable credential: every tenant embeds through the
+    # same model, so the vector space stays comparable across the whole platform.
+    embeddings_url: str = Field(default="http://localhost:18080")
+
 
 @lru_cache
 def get_settings() -> Settings:

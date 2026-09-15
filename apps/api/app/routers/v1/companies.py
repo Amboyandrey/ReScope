@@ -16,6 +16,7 @@ from app.schemas.company import (
     CompetencyResponse,
     CreateCompanyRequest,
     OfferingResponse,
+    ProfileChangeResponse,
     ScrapeJobResponse,
     ScrapePageResponse,
 )
@@ -26,6 +27,7 @@ from app.services.companies import (
     get_company,
     get_competencies,
     get_offerings,
+    get_profile_changes,
     list_companies,
 )
 from app.services.jobs import enqueue_scrape_job
@@ -135,6 +137,14 @@ async def get_screenshot(
     if page.screenshot_key is None:
         raise ScrapePageNotFound("This page has no screenshot.")
     return Response(content=read_screenshot(page.screenshot_key), media_type="image/png")
+
+
+@router.get("/{company_id}/changes", response_model=list[ProfileChangeResponse])
+async def list_changes(company_id: uuid.UUID, ctx: _ViewerCtx, db: DbSession) -> list[ProfileChangeResponse]:
+    """List what a company's re-profile runs have changed, most recent first."""
+    await get_company(db, tenant_id=ctx.tenant.id, company_id=company_id)  # 404s if not this tenant's
+    changes = await get_profile_changes(db, tenant_id=ctx.tenant.id, company_id=company_id)
+    return [ProfileChangeResponse.model_validate(c) for c in changes]
 
 
 @router.delete("/{company_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -2,7 +2,9 @@
 
 from app.models.audit_log import AuditLog
 from app.models.company import Company, Competency, CompetencyKind, Offering, OfferingKind, ProfileStatus
+from app.models.crm import CompanyTag, Contact, Note, SavedSearch, Tag
 from app.models.embedding import EMBEDDING_DIMENSIONS, Embedding, SourceKind
+from app.models.import_job import Import, ImportKind, ImportStatus
 from app.models.plan import Plan
 from app.models.platform_settings import SETTINGS_ROW_ID, PlatformSettings
 from app.models.role import Role, role_at_least
@@ -16,11 +18,17 @@ __all__ = [
     "SETTINGS_ROW_ID",
     "AuditLog",
     "Company",
+    "CompanyTag",
     "Competency",
     "CompetencyKind",
+    "Contact",
     "Embedding",
+    "Import",
+    "ImportKind",
+    "ImportStatus",
     "Invitation",
     "Membership",
+    "Note",
     "Offering",
     "OfferingKind",
     "Plan",
@@ -28,11 +36,13 @@ __all__ = [
     "ProfileChange",
     "ProfileStatus",
     "Role",
+    "SavedSearch",
     "ScrapeJob",
     "ScrapeMode",
     "ScrapePage",
     "ScrapeStatus",
     "SourceKind",
+    "Tag",
     "Tenant",
     "UsageEvent",
     "UsageKind",

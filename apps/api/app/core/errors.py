@@ -113,3 +113,18 @@ class ScrapingPaused(AppError):
 class SuperadminRequired(AppError):
     status_code = 403
     detail = "This action requires platform administrator access."
+
+
+class TagNotFound(AppError):
+    status_code = 404
+    detail = "Tag not found."
+
+
+class TagAlreadyExists(AppError):
+    status_code = 409
+    detail = "A tag with this name already exists."
+
+
+class SavedSearchNotFound(AppError):
+    status_code = 404
+    detail = "Saved search not found."

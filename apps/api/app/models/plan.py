@@ -16,3 +16,4 @@ class Plan(Base):
     deep_runs_per_month: Mapped[int]
     max_companies: Mapped[int]
     max_members: Mapped[int]
+    reprofile_interval_days: Mapped[int]

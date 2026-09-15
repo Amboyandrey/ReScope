@@ -9,7 +9,22 @@ from app.core.csrf import csrf_middleware
 from app.core.errors import AppError
 from app.core.logging import configure_logging
 from app.core.middleware import request_context_middleware, security_headers_middleware
-from app.routers.v1 import admin, audit, auth, companies, health, invitations, members, search, tenants
+from app.routers.v1 import (
+    admin,
+    audit,
+    auth,
+    companies,
+    contacts,
+    health,
+    imports,
+    invitations,
+    members,
+    notes,
+    saved_searches,
+    search,
+    tags,
+    tenants,
+)
 
 settings = get_settings()
 configure_logging(settings.debug)
@@ -36,7 +51,13 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(members.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
+app.include_router(contacts.router, prefix="/api/v1")
+app.include_router(notes.router, prefix="/api/v1")
+app.include_router(imports.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
+app.include_router(saved_searches.router, prefix="/api/v1")
+app.include_router(tags.tags_router, prefix="/api/v1")
+app.include_router(tags.company_tags_router, prefix="/api/v1")
 app.include_router(invitations.tenant_router, prefix="/api/v1")
 app.include_router(invitations.token_router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")

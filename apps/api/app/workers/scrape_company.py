@@ -12,9 +12,10 @@ import uuid
 from typing import Any
 
 from app.core.db import async_session_factory, set_tenant_scope
-from app.models import Company, ProfileStatus, ScrapeJob, ScrapeStatus
+from app.models import Company, ProfileChange, ProfileStatus, ScrapeJob, ScrapeStatus
 from app.scraping.pipeline import run_scrape_job
 from app.services.platform_settings import assert_scraping_not_paused
+from app.services.reprofile import diff_snapshots, snapshot_profile
 
 
 async def scrape_company(ctx: dict[str, Any], job_id: str, tenant_id: str, company_id: str) -> None:
@@ -29,11 +30,21 @@ async def scrape_company(ctx: dict[str, Any], job_id: str, tenant_id: str, compa
         if job is None or company is None:
             return  # deleted before the job ran — nothing to do
 
+        # A company already carrying a finished profile means this run is a re-profile, not its
+        # first — only then is there a "before" worth diffing against once the run completes.
+        is_reprofile = company.last_profiled_at is not None
+
         try:
             # Re-checked here, not just at enqueue time: the killswitch could have been flipped
             # on in the time between a job being queued and a worker actually picking it up.
             await assert_scraping_not_paused(db)
+            before = await snapshot_profile(db, tenant_id=tid, company=company) if is_reprofile else None
             await run_scrape_job(db, job=job, company=company)
+            if before is not None:
+                after = await snapshot_profile(db, tenant_id=tid, company=company)
+                diff = diff_snapshots(before, after)
+                if diff is not None:
+                    db.add(ProfileChange(tenant_id=tid, company_id=cid, job_id=jid, diff=diff))
             await db.commit()
         except Exception as exc:  # noqa: BLE001 — recorded on the job, never left unhandled
             await db.rollback()

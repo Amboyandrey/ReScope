@@ -22,11 +22,14 @@ from app.models import (
     ScrapePage,
     ScrapeStatus,
     SourceKind,
+    UsageKind,
 )
 from app.scraping.discovery import discover_candidate_urls
+from app.scraping.extraction import MODEL as EXTRACTION_MODEL
 from app.scraping.extraction import extract_profile
 from app.scraping.render import render_pages
 from app.services.embeddings import MODEL_NAME, embed_texts
+from app.services.usage import record_usage_event
 
 MAX_CANDIDATE_PAGES = 12
 # Sonnet 5 pricing at the time this was written — see docs/PLAN.md §5. A config constant, not a
@@ -92,6 +95,19 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
         job.tokens_in = result.tokens_in
         job.tokens_out = result.tokens_out
         job.cost_usd = float(_cost_usd(result.tokens_in, result.tokens_out))
+        # A profile run is billed the moment extraction succeeds, independent of whether
+        # embedding it afterward also succeeds — extraction is the step this platform pays
+        # Anthropic for; a slow or down embeddings service doesn't change that cost.
+        await record_usage_event(
+            db,
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            kind=UsageKind.PROFILE,
+            model=EXTRACTION_MODEL,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            cost_usd=job.cost_usd,
+        )
 
         company.overview = result.profile.overview
 

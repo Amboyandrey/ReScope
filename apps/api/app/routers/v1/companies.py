@@ -27,6 +27,8 @@ from app.services.companies import (
     list_companies,
 )
 from app.services.jobs import enqueue_scrape_job
+from app.services.platform_settings import assert_scraping_not_paused
+from app.services.quotas import assert_within_quota
 from app.services.scrape_jobs import create_scrape_job, list_scrape_jobs
 
 router = APIRouter(prefix="/tenants/current/companies", tags=["companies"])
@@ -37,9 +39,16 @@ _MemberCtx = Annotated[TenantCtx, Depends(require_role(Role.MEMBER))]
 
 @router.post("", response_model=CompanyResponse, status_code=status.HTTP_201_CREATED)
 async def create(body: CreateCompanyRequest, ctx: _MemberCtx, db: DbSession) -> CompanyResponse:
-    """Add a company to the current tenant and queue its first scrape."""
+    """Add a company to the current tenant and queue its first scrape.
+
+    Quota and the killswitch are both checked before anything is written — a rejected request
+    leaves no orphaned company or job row behind, and a tenant's plan is never charged for a run
+    that never happened.
+    """
+    await assert_scraping_not_paused(db)
+    await assert_within_quota(db, tenant=ctx.tenant, mode=body.mode)
     company = await create_company(db, tenant_id=ctx.tenant.id, created_by=ctx.user, raw_domain=body.domain)
-    job = await create_scrape_job(db, tenant_id=ctx.tenant.id, company_id=company.id)
+    job = await create_scrape_job(db, tenant_id=ctx.tenant.id, company_id=company.id, mode=body.mode)
     company.profile_status = ProfileStatus.SCRAPING
     await record_audit(
         db,

@@ -92,24 +92,28 @@ async def clean_state() -> AsyncGenerator[None]:
     test. pytest-asyncio gives every test its own event loop, but the engine and Redis client are
     module-level singletons — a connection left checked-in from this loop would fail in the next.
 
-    `plans` is deliberately NOT truncated: it's seed reference data the `0002` migration inserts
-    once, and `apply_migrations` only runs `alembic upgrade head` once per session — truncating it
-    here would permanently empty it for every test after the first, since there's no migration
-    left to reseed it once the database is already at head."""
+    `plans` and `platform_settings` are deliberately NOT truncated: both are seed reference data a
+    migration inserts once (`0002` and `0005` respectively), and `apply_migrations` only runs
+    `alembic upgrade head` once per session — truncating either here would permanently empty it
+    for every test after the first, since there's no migration left to reseed it once the database
+    is already at head. `platform_settings` is a single mutable row rather than a static table
+    though, so a test that flips the killswitch resets it by UPDATE instead, the same durable-row
+    treatment ReCore's own feature_flags exclusion gets."""
     yield
     # Truncation needs the owner role: the app role has CRUD only, and RLS would hide rows anyway.
     owner = create_async_engine(get_settings().database_url, poolclass=NullPool)
     async with owner.begin() as conn:
         rows = await conn.execute(
             text(
-                "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename NOT IN ('alembic_version', 'plans')"
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename NOT IN ('alembic_version', 'plans', 'platform_settings')"
             )
         )
         tables = [row[0] for row in rows]
         if tables:
             joined = ", ".join(f'"{t}"' for t in tables)
             await conn.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+        await conn.execute(text("UPDATE platform_settings SET scraping_paused = false"))
     await owner.dispose()
     await get_redis().flushdb()
     await close_redis()

@@ -1,0 +1,32 @@
+# Build context: apps/api (see infra/docker-compose.yml).
+
+FROM python:3.12-slim AS builder
+RUN pip install --no-cache-dir uv
+# Same path as the runtime WORKDIR: uv bakes absolute interpreter paths into the venv's scripts.
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY app ./app
+COPY alembic.ini ./
+COPY migrations ./migrations
+
+FROM python:3.12-slim AS runtime
+RUN useradd --create-home --uid 1000 rescope
+WORKDIR /app
+
+COPY --from=builder --chown=rescope:rescope /app/.venv /app/.venv
+COPY --from=builder --chown=rescope:rescope /app/app /app/app
+COPY --from=builder --chown=rescope:rescope /app/alembic.ini /app/alembic.ini
+COPY --from=builder --chown=rescope:rescope /app/migrations /app/migrations
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER rescope
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')" || exit 1
+
+# Migrations run on every boot as the owner role — a no-op once the schema is current.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

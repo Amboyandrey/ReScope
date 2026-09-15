@@ -1,0 +1,50 @@
+"""Request and response shapes for membership and invitation endpoints."""
+
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, EmailStr
+
+from app.models import Role
+
+
+class RoleUpdate(BaseModel):
+    """The new role to assign a member."""
+
+    role: Role
+
+
+class InviteCreate(BaseModel):
+    """Who to invite, and at what role."""
+
+    email: EmailStr
+    role: Role = Role.MEMBER
+
+
+class InviteOut(BaseModel):
+    """A pending invitation. `token` is populated only in the response to creating it."""
+
+    id: uuid.UUID
+    email: str
+    role: Role
+    expires_at: datetime
+    token: str | None = None
+
+
+class InvitePreview(BaseModel):
+    """What an invite link shows before the visitor signs in — no auth required to see this."""
+
+    tenant_name: str
+    email: str
+    role: Role
+    expires_at: datetime
+
+
+class PendingInvitationOut(BaseModel):
+    """One pending invite waiting for the signed-in account's email — a welcome prompt right
+    after login, whether or not that account ever followed the original invite link."""
+
+    id: uuid.UUID
+    tenant_name: str
+    role: Role
+    expires_at: datetime

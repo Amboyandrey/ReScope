@@ -59,6 +59,7 @@ function SearchResultRow({ hit }: { hit: SearchHit }) {
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<Company[] | null>(null);
   const [domain, setDomain] = useState("");
+  const [deepMode, setDeepMode] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -82,8 +83,9 @@ export default function CompaniesPage() {
     setError(null);
     setPending(true);
     try {
-      await createCompany(domain);
+      await createCompany(domain, deepMode ? "deep" : "fast");
       setDomain("");
+      setDeepMode(false);
       await refresh();
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Something went wrong.");
@@ -114,21 +116,28 @@ export default function CompaniesPage() {
         competencies.
       </p>
 
-      <form onSubmit={onAddSubmit} className="mt-6 flex gap-2">
-        <input
-          className="flex-1 rounded-md border border-zinc-300 px-3 py-2"
-          placeholder="acme.com or https://acme.com"
-          value={domain}
-          onChange={(e) => setDomain(e.target.value)}
-          required
-        />
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-white disabled:opacity-50"
-        >
-          {pending ? "Adding…" : "Add"}
-        </button>
+      <form onSubmit={onAddSubmit} className="mt-6 flex flex-col gap-2">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded-md border border-zinc-300 px-3 py-2"
+            placeholder="acme.com or https://acme.com"
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            required
+          />
+          <button
+            type="submit"
+            disabled={pending}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-white disabled:opacity-50"
+          >
+            {pending ? "Adding…" : "Add"}
+          </button>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-zinc-600">
+          <input type="checkbox" checked={deepMode} onChange={(e) => setDeepMode(e.target.checked)} />
+          Deep scan — also visually explores tabs, menus, and hidden sections (slower, costs more,
+          counts against a separate monthly quota)
+        </label>
       </form>
       <FormError message={error} />
 

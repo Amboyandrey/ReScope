@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # same model, so the vector space stays comparable across the whole platform.
     embeddings_url: str = Field(default="http://localhost:18080")
 
+    # Where Tier 2's screenshot evidence is written — a bind-mounted volume in compose, a tmp dir
+    # in tests. Only the scraper writes here; the API reads the same volume to serve a screenshot
+    # back (see app/routers/v1/companies.py's screenshot route), the same shared-volume pattern
+    # ReCore uses for chat attachments.
+    storage_dir: str = "/app/storage"
+
 
 @lru_cache
 def get_settings() -> Settings:

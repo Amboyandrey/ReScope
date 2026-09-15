@@ -6,10 +6,15 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.models.company import CompetencyKind, OfferingKind, ProfileStatus
+from app.models.scrape import ScrapeMode
 
 
 class CreateCompanyRequest(BaseModel):
     domain: str = Field(min_length=1, max_length=2048, description="A domain or website URL.")
+    mode: ScrapeMode = Field(
+        default=ScrapeMode.FAST,
+        description="'fast' runs Tier 0+1; 'deep' additionally escalates to the visual agent.",
+    )
 
 
 class CompanyResponse(BaseModel):
@@ -93,3 +98,13 @@ class SearchHitResponse(BaseModel):
 class SimilarCompanyResponse(BaseModel):
     company: CompanyResponse
     distance: float
+
+
+class ScrapePageResponse(BaseModel):
+    id: uuid.UUID
+    url: str
+    status_code: int | None
+    has_screenshot: bool
+    fetched_at: datetime
+
+    model_config = {"from_attributes": True}

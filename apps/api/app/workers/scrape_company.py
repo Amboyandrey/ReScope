@@ -14,6 +14,7 @@ from typing import Any
 from app.core.db import async_session_factory, set_tenant_scope
 from app.models import Company, ProfileStatus, ScrapeJob, ScrapeStatus
 from app.scraping.pipeline import run_scrape_job
+from app.services.platform_settings import assert_scraping_not_paused
 
 
 async def scrape_company(ctx: dict[str, Any], job_id: str, tenant_id: str, company_id: str) -> None:
@@ -29,6 +30,9 @@ async def scrape_company(ctx: dict[str, Any], job_id: str, tenant_id: str, compa
             return  # deleted before the job ran — nothing to do
 
         try:
+            # Re-checked here, not just at enqueue time: the killswitch could have been flipped
+            # on in the time between a job being queued and a worker actually picking it up.
+            await assert_scraping_not_paused(db)
             await run_scrape_job(db, job=job, company=company)
             await db.commit()
         except Exception as exc:  # noqa: BLE001 — recorded on the job, never left unhandled

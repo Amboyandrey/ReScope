@@ -13,7 +13,7 @@ import hashlib
 from dataclasses import dataclass
 
 from markdownify import markdownify
-from playwright.async_api import Browser, async_playwright
+from playwright.async_api import Browser, Page, async_playwright
 
 from app.core.ssrf import UnsafeUrlError, assert_safe_url
 
@@ -31,6 +31,28 @@ class RenderedPage:
     status_code: int | None
     markdown: str
     content_hash: str
+    # Set only by Tier 2's visual agent (app/scraping/visual_agent.py) — Tier 1 never screenshots.
+    screenshot: bytes | None = None
+
+
+async def extract_markdown(page: Page) -> str | None:
+    """Pull the current page's own content out (stripping nav/footer/script boilerplate) and
+    convert it to markdown, or `None` if there's nothing worth keeping. Shared by Tier 1's
+    render_page below and Tier 2's visual agent (app/scraping/visual_agent.py), which reads a
+    page's content after clicking around rather than after a fresh navigation."""
+    html = await page.evaluate(
+        f"""() => {{
+            const clone = document.body.cloneNode(true);
+            clone.querySelectorAll("{_STRIP_SELECTORS}").forEach(el => el.remove());
+            return clone.innerHTML;
+        }}"""
+    )
+    markdown = markdownify(html, heading_style="ATX").strip()
+    return markdown[:_MAX_CONTENT_CHARS] if markdown else None
+
+
+def content_hash(markdown: str) -> str:
+    return hashlib.sha256(markdown.encode()).hexdigest()
 
 
 async def render_page(browser: Browser, url: str) -> RenderedPage | None:
@@ -55,28 +77,20 @@ async def render_page(browser: Browser, url: str) -> RenderedPage | None:
         if "text/html" not in content_type:
             return None
 
-        html = await page.evaluate(
-            f"""() => {{
-                const clone = document.body.cloneNode(true);
-                clone.querySelectorAll("{_STRIP_SELECTORS}").forEach(el => el.remove());
-                return clone.innerHTML;
-            }}"""
-        )
+        markdown = await extract_markdown(page)
     except Exception:  # noqa: BLE001 — one bad page must never fail the whole job
         return None
     finally:
         await page.close()
 
-    markdown = markdownify(html, heading_style="ATX").strip()
     if not markdown:
         return None
-    markdown = markdown[:_MAX_CONTENT_CHARS]
     return RenderedPage(
         url=url,
         final_url=final_url,
         status_code=response.status,
         markdown=markdown,
-        content_hash=hashlib.sha256(markdown.encode()).hexdigest(),
+        content_hash=content_hash(markdown),
     )
 
 

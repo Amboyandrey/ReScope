@@ -98,3 +98,18 @@ class CompanyAlreadyTracked(AppError):
 class InvalidDomain(AppError):
     status_code = 422
     detail = "Enter a valid company website or domain."
+
+
+class QuotaExceeded(AppError):
+    status_code = 402
+    detail = "This tenant's plan quota is used up for this month."
+
+
+class ScrapingPaused(AppError):
+    status_code = 503
+    detail = "Scraping is temporarily paused platform-wide."
+
+
+class SuperadminRequired(AppError):
+    status_code = 403
+    detail = "This action requires platform administrator access."

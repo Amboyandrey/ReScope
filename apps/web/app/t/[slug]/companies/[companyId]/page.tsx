@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { EvidenceList } from "@/components/evidence-list";
@@ -7,8 +8,10 @@ import { StatusBadge } from "@/components/status-badge";
 import {
   type CompanyDetail,
   type ScrapeJob,
+  type SimilarCompany,
   deleteCompany,
   getCompany,
+  getSimilarCompanies,
   listScrapeJobs,
 } from "@/lib/company-client";
 
@@ -19,6 +22,7 @@ export default function CompanyProfilePage() {
   const { companyId } = useParams<{ companyId: string }>();
   const [company, setCompany] = useState<CompanyDetail | null>(null);
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
+  const [similar, setSimilar] = useState<SimilarCompany[]>([]);
 
   const refresh = useCallback(async () => {
     const [detail, jobList] = await Promise.all([getCompany(companyId), listScrapeJobs(companyId)]);
@@ -32,6 +36,11 @@ export default function CompanyProfilePage() {
       setCompany(detail);
       setJobs(jobList);
     });
+    // Best-effort — a company with no summary embedding yet (still scraping, or scraping failed
+    // before extraction) just gets an empty list, not an error.
+    getSimilarCompanies(companyId)
+      .then(setSimilar)
+      .catch(() => setSimilar([]));
   }, [companyId]);
 
   useEffect(() => {
@@ -137,6 +146,25 @@ export default function CompanyProfilePage() {
           </ul>
         )}
       </section>
+
+      {similar.length > 0 && (
+        <section className="mt-8">
+          <h2 className="text-lg font-semibold">Similar companies</h2>
+          <ul className="mt-3 flex flex-col gap-2">
+            {similar.map(({ company: c }) => (
+              <li key={c.id}>
+                <Link
+                  href={`/companies/${c.id}`}
+                  className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-4 py-3 hover:border-zinc-300"
+                >
+                  <span className="font-medium">{c.name}</span>
+                  <span className="text-sm text-zinc-500">{c.domain}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <button
         onClick={async () => {

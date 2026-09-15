@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FormError } from "@/components/form-error";
 import { StatusBadge } from "@/components/status-badge";
 import { AuthError } from "@/lib/auth-client";
-import { type Company, createCompany, listCompanies } from "@/lib/company-client";
+import { type Company, type SearchHit, createCompany, listCompanies, searchCompanies } from "@/lib/company-client";
 
 // A company mid-scrape polls its own row rather than the whole list re-fetching on a timer —
 // keeps this page cheap even with a long list, and each row stops polling once it settles.
@@ -39,11 +39,32 @@ function CompanyRow({ company: initial }: { company: Company }) {
   );
 }
 
+function SearchResultRow({ hit }: { hit: SearchHit }) {
+  return (
+    <Link
+      href={`/companies/${hit.company.id}`}
+      className="flex flex-col gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-3 hover:border-zinc-300"
+    >
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{hit.company.name}</span>
+        <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs uppercase text-zinc-500">
+          {hit.source_kind.replace("_", " ")}
+        </span>
+      </div>
+      <p className="text-sm text-zinc-600">{hit.content}</p>
+    </Link>
+  );
+}
+
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<Company[] | null>(null);
   const [domain, setDomain] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const refresh = useCallback(async () => {
     setCompanies(await listCompanies());
@@ -56,7 +77,7 @@ export default function CompaniesPage() {
     listCompanies().then(setCompanies);
   }, []);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onAddSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setPending(true);
@@ -71,6 +92,20 @@ export default function CompaniesPage() {
     }
   }
 
+  async function onSearchSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!query.trim()) {
+      setResults(null);
+      return;
+    }
+    setSearching(true);
+    try {
+      setResults(await searchCompanies(query));
+    } finally {
+      setSearching(false);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
       <h1 className="text-2xl font-semibold">Companies</h1>
@@ -79,7 +114,7 @@ export default function CompaniesPage() {
         competencies.
       </p>
 
-      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
+      <form onSubmit={onAddSubmit} className="mt-6 flex gap-2">
         <input
           className="flex-1 rounded-md border border-zinc-300 px-3 py-2"
           placeholder="acme.com or https://acme.com"
@@ -97,7 +132,39 @@ export default function CompaniesPage() {
       </form>
       <FormError message={error} />
 
-      {companies === null ? null : companies.length === 0 ? (
+      <form onSubmit={onSearchSubmit} className="mt-8 flex gap-2">
+        <input
+          className="flex-1 rounded-md border border-zinc-300 px-3 py-2"
+          placeholder="Search across every company's products, services and competencies…"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            if (!e.target.value.trim()) setResults(null);
+          }}
+        />
+        <button
+          type="submit"
+          disabled={searching}
+          className="rounded-md border border-zinc-300 px-4 py-2 disabled:opacity-50"
+        >
+          {searching ? "Searching…" : "Search"}
+        </button>
+      </form>
+
+      {results !== null ? (
+        <>
+          <p className="mt-6 text-sm text-zinc-500">
+            {results.length === 0 ? "No matches." : `${results.length} match${results.length === 1 ? "" : "es"}`}
+          </p>
+          <ul className="mt-3 flex flex-col gap-2">
+            {results.map((hit, i) => (
+              <li key={`${hit.company.id}-${i}`}>
+                <SearchResultRow hit={hit} />
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : companies === null ? null : companies.length === 0 ? (
         <p className="mt-8 text-zinc-500">No companies yet — add one above to get started.</p>
       ) : (
         <ul className="mt-8 flex flex-col gap-2">

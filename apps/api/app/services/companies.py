@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.domains import normalize_domain
 from app.core.errors import CompanyAlreadyTracked, CompanyNotFound
 from app.core.ssrf import UnsafeUrlError, assert_safe_url
-from app.models import Company, Competency, Offering, User
+from app.models import Company, Competency, Offering, ProfileChange, User
 
 
 async def create_company(
@@ -64,6 +64,18 @@ async def get_competencies(
         select(Competency)
         .where(Competency.tenant_id == tenant_id, Competency.company_id == company_id)
         .order_by(Competency.created_at)
+    )
+    return list((await db.scalars(stmt)).all())
+
+
+async def get_profile_changes(
+    db: AsyncSession, *, tenant_id: uuid.UUID, company_id: uuid.UUID
+) -> list[ProfileChange]:
+    """List a company's re-profile diffs, most recent first — what a changes-feed UI reads."""
+    stmt = (
+        select(ProfileChange)
+        .where(ProfileChange.tenant_id == tenant_id, ProfileChange.company_id == company_id)
+        .order_by(ProfileChange.created_at.desc())
     )
     return list((await db.scalars(stmt)).all())
 

@@ -108,3 +108,12 @@ class ScrapePageResponse(BaseModel):
     fetched_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProfileChangeResponse(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    diff: dict[str, object]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

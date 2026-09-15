@@ -16,6 +16,7 @@ from app.routers.v1 import (
     companies,
     contacts,
     health,
+    imports,
     invitations,
     members,
     notes,
@@ -52,6 +53,7 @@ app.include_router(members.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(notes.router, prefix="/api/v1")
+app.include_router(imports.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(saved_searches.router, prefix="/api/v1")
 app.include_router(tags.tags_router, prefix="/api/v1")

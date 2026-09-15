@@ -10,6 +10,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.models.company import CompanyType
 from app.scraping.render import RenderedPage
 
 MODEL = "claude-sonnet-5"
@@ -27,7 +28,9 @@ class ExtractedEvidence(BaseModel):
 class ExtractedOffering(BaseModel):
     kind: str = Field(description='"product" or "service"')
     name: str
-    description: str | None = None
+    description: str = Field(
+        description="What this offering is. Omit the offering entirely if you can't write a real one."
+    )
     category: str | None = None
     evidence: list[ExtractedEvidence]
 
@@ -37,14 +40,34 @@ class ExtractedCompetency(BaseModel):
         description='One of "capability", "technology", "certification", "industry_served", "partnership"'
     )
     name: str
-    description: str | None = None
+    description: str = Field(
+        description=(
+            "How the company evidently has this — a certification it holds, a technology named "
+            "on a product page, a case study in that industry. Not a restatement of the name. "
+            "Omit the competency entirely if you can't write a real one."
+        )
+    )
     evidence: list[ExtractedEvidence]
+
+
+class ExtractedFacts(BaseModel):
+    """Company-level facts pulled from about/contact/footer pages — every field stays null rather
+    than guessed when the pages don't actually state it."""
+
+    hq_country: str | None = Field(default=None, description="ISO 3166-1 alpha-2, e.g. 'US', 'DE'.")
+    hq_city: str | None = None
+    industry: str | None = None
+    company_type: CompanyType | None = None
+    employee_range: str | None = Field(default=None, description="e.g. '1-10', '11-50', '1000+'.")
+    founded_year: int | None = None
+    socials: dict[str, str] = Field(default_factory=dict, description="e.g. {'linkedin': 'https://...'}")
 
 
 class ExtractedProfile(BaseModel):
     """What one extraction call produces from a company's own pages."""
 
     overview: str = Field(description="A neutral 2-4 sentence summary of what the company does.")
+    facts: ExtractedFacts = Field(default_factory=ExtractedFacts)
     offerings: list[ExtractedOffering]
     competencies: list[ExtractedCompetency]
 
@@ -67,12 +90,18 @@ def _build_prompt(pages: list[RenderedPage]) -> str:
         sections.append(f"### Page: {page.url}\n\n{chunk}")
     pages_block = "\n\n---\n\n".join(sections)
     return (
-        "Below are pages from one company's own website. Extract its overview, the products and "
-        "services it offers, and its competencies (capabilities, technologies, certifications, "
-        "industries it serves, and partnerships). Only include what these pages actually support "
-        "— do not invent offerings or competencies. Every offering and competency needs at least "
-        "one evidence entry citing the exact page URL it came from and a short supporting quote "
-        "lifted from that page's text.\n\n"
+        "Below are pages from one company's own website. Extract its overview, the company facts "
+        "listed in the schema (country as an ISO 3166-1 alpha-2 code, city, industry, company "
+        "type, employee range, founded year, social links) — leave a fact null rather than guess "
+        "if these pages don't actually state it — the products and services it offers, and its "
+        "competencies (capabilities, technologies, certifications, industries it serves, and "
+        "partnerships). Only include what these pages actually support — do not invent offerings "
+        "or competencies. Every offering and competency needs a real description (what it is for "
+        "an offering; the evidence-backed reason the company has it — a held certification, a "
+        "named technology, a case study — for a competency, never just its name restated) and at "
+        "least one evidence entry citing the exact page URL it came from and a short supporting "
+        "quote lifted from that page's text. Omit an offering or competency entirely rather than "
+        "include it without a real description.\n\n"
         f"{pages_block}"
     )
 

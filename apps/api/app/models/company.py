@@ -29,6 +29,20 @@ class ProfileStatus(enum.StrEnum):
     FAILED = "failed"
 
 
+class CompanyType(enum.StrEnum):
+    """A closed taxonomy, not free text — this is a catalogue filter (docs/PLAN.md §9), and a
+    filter needs a fixed set of values to be worth building a UI control for."""
+
+    MANUFACTURER = "manufacturer"
+    DISTRIBUTOR = "distributor"
+    SERVICE_PROVIDER = "service_provider"
+    SOFTWARE = "software"
+    CONSULTANCY = "consultancy"
+    AGENCY = "agency"
+    RESEARCH = "research"
+    OTHER = "other"
+
+
 class Company(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """One tracked company. `UNIQUE(tenant_id, id)` exists so child tables — offerings,
     competencies, scrape_jobs — can declare a composite foreign key back to this row scoped by
@@ -45,7 +59,12 @@ class Company(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200))
     website_url: Mapped[str] = mapped_column(String(2048))
     industry: Mapped[str | None] = mapped_column(String(120), default=None)
-    hq_country: Mapped[str | None] = mapped_column(String(120), default=None)
+    company_type: Mapped[CompanyType | None] = mapped_column(
+        Enum(CompanyType, name="company_type"), default=None
+    )
+    # ISO 3166-1 alpha-2 (e.g. "US", "DE") — validated at write, not just a free-text label, since
+    # this is a catalogue filter (docs/PLAN.md §11) and a filter needs a canonical value to match on.
+    hq_country: Mapped[str | None] = mapped_column(String(2), default=None)
     hq_city: Mapped[str | None] = mapped_column(String(120), default=None)
     employee_range: Mapped[str | None] = mapped_column(String(32), default=None)
     founded_year: Mapped[int | None] = mapped_column(Integer, default=None)
@@ -85,7 +104,9 @@ class Offering(Base, UUIDPrimaryKeyMixin, TimestampMixin, EvidenceMixin):
     company_id: Mapped[uuid.UUID] = mapped_column()
     kind: Mapped[OfferingKind] = mapped_column(Enum(OfferingKind, name="offering_kind"))
     name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[str | None] = mapped_column(default=None)
+    # Required — extraction is instructed to omit an offering it can't describe rather than write
+    # a bare name (docs/PLAN.md §9); this is also the text that gets embedded for search and chat.
+    description: Mapped[str] = mapped_column(default="", server_default="")
     category: Mapped[str | None] = mapped_column(String(120), default=None)
     url: Mapped[str | None] = mapped_column(String(2048), default=None)
 
@@ -112,4 +133,6 @@ class Competency(Base, UUIDPrimaryKeyMixin, TimestampMixin, EvidenceMixin):
     company_id: Mapped[uuid.UUID] = mapped_column()
     kind: Mapped[CompetencyKind] = mapped_column(Enum(CompetencyKind, name="competency_kind"))
     name: Mapped[str] = mapped_column(String(200))
-    description: Mapped[str | None] = mapped_column(default=None)
+    # Required — must say *how* the company evidently has this competency (a held certification,
+    # a named technology, a case study), not restate the name (docs/PLAN.md §9).
+    description: Mapped[str] = mapped_column(default="", server_default="")

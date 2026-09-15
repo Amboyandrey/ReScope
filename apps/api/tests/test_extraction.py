@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock
 
 import anthropic
 import pytest
+from pydantic import ValidationError
 
 from app.scraping import extraction
-from app.scraping.extraction import ExtractedOffering, ExtractedProfile, extract_profile
+from app.scraping.extraction import ExtractedFacts, ExtractedOffering, ExtractedProfile, extract_profile
 from app.scraping.render import RenderedPage
 
 
@@ -56,6 +57,26 @@ async def test_extract_profile_parses_the_response(monkeypatch: pytest.MonkeyPat
     assert call_kwargs["model"] == extraction.MODEL
     assert call_kwargs["output_format"] is ExtractedProfile
     assert "WidgetPro" in call_kwargs["messages"][0]["content"]
+
+
+def test_offering_without_a_description_is_rejected() -> None:
+    """Extraction is instructed to omit an offering it can't describe — a bare name is no longer
+    a valid row, so the schema itself refuses one rather than relying on the prompt alone."""
+    with pytest.raises(ValidationError):
+        ExtractedOffering(
+            kind="product",
+            name="WidgetPro",
+            category=None,
+            evidence=[{"url": "https://acme.example/products", "quote": "Introducing WidgetPro"}],
+        )
+
+
+def test_profile_facts_default_to_all_unknown() -> None:
+    """A profile with no facts block still parses — every fact stays null rather than required."""
+    profile = ExtractedProfile(overview="Acme makes widgets.", offerings=[], competencies=[])
+    assert profile.facts == ExtractedFacts()
+    assert profile.facts.hq_country is None
+    assert profile.facts.company_type is None
 
 
 async def test_prompt_truncates_to_the_total_character_budget(monkeypatch: pytest.MonkeyPatch) -> None:

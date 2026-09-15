@@ -195,3 +195,171 @@ Phase 1 is the first demoable cut; everything after it is additive.
   db index, so the suite can never touch a dev stack's data.
 - Work happens on a branch per phase, committed and pushed one coherent feature at a time, and
   lands through a pull request the repository owner reviews and merges.
+
+---
+
+# Part 2 — richer profiles, a catalogue, bring-your-own keys, Browser Use Cloud, and chat
+
+Phases 0–5 shipped everything above. Part 2 extends it in four phases, in dependency order: the
+data has to get richer before a catalogue or a chat over it is worth building; per-workspace keys
+have to exist before a second scraping provider or a chat can bill against them.
+
+## 9. Decisions
+
+- **Browser Use Cloud, not the library.** `browser-use` (0.13.x) hard-pins `anthropic==0.76.0`
+  against the `>=1.5.0` Tier 1 needs — the same conflict that produced the custom agent in Phase
+  3. Its hosted API (`https://api.browser-use.com/api/v2`) is plain HTTP, runs on Browser Use's own
+  models, and bills to a Browser Use key, so it sits alongside the custom agent as a second Tier 2
+  *provider* rather than replacing it. No new worker image.
+- **Bring-your-own keys, Anthropic only.** A workspace can register its own Anthropic key (used for
+  extraction, the custom visual agent, and chat) and its own Browser Use key. A workspace on its own
+  Anthropic key is exempt from the plan's profile/deep-run/chat quotas; usage is still metered, with
+  each event marked as billed to the platform or to the tenant. No OpenAI or other providers — one
+  LLM code path stays one.
+- **Chat is retrieval over the catalogue, with citations.** One chat surface per workspace, over
+  every company it tracks. The model only ever sees what pgvector retrieved for the question and is
+  told to cite it; every answer stores the companies and rows it drew from. Streamed, persisted, no
+  tools.
+- **Descriptions are mandatory.** Every offering carries a description of what it is; every
+  competency carries a description of *how the company evidently has it*. Extraction is told to
+  omit an item it can't describe rather than emit a bare name. Descriptions are what gets embedded,
+  so search and chat rank on substance, not labels.
+- **Company facts come from the site.** Country, city, industry, company type, employee range,
+  founded year, and socials are extracted from about/contact/footer pages into the columns that
+  have existed since `0003` but were never populated. Country is ISO 3166-1 alpha-2; company type is
+  a small fixed enum. Both are the catalogue's filters, so they're columns, not free text.
+
+## 10. Data model changes
+
+```
+companies                 + company_type company_type NULL    (enum below)
+                            hq_country now ISO-2, validated at write
+offerings.description     NOT NULL (backfilled '' for legacy rows, re-profile fills them)
+competencies.description  NOT NULL (same)
+
+plans                     + chat_messages_per_month int
+
+tenant_credentials(id, tenant_id, provider anthropic|browser_use, ciphertext bytea,
+                   nonce bytea, wrapped_dek bytea, last4, validated_at,
+                   created_by, created_at)                 UNIQUE (tenant_id, provider)
+tenant_settings           (on tenants.settings jsonb)  scrape_provider: custom|browser_use_cloud
+
+conversations(id, tenant_id, owner_id, title, created_at, updated_at)
+messages(id, tenant_id, conversation_id, role user|assistant, content text,
+         citations jsonb, tokens_in, tokens_out, created_at)
+
+usage_events              + billed_to platform|tenant
+                          + kind CHAT, kind BROWSER_USE_RUN
+```
+
+```
+company_type: manufacturer | distributor | service_provider | software | consultancy
+            | agency | research | other
+```
+
+Key encryption follows ReCore: AES-256-GCM, a random per-secret data key wrapped by a master key
+from the environment (`MASTER_KEY`), plaintext never on a response schema, `last4` for display.
+
+## 11. Phase 6 — richer profiles and the catalogue
+
+**Extraction.** `ExtractedProfile` gains a `facts` block (name, hq_country, hq_city, industry,
+company_type, employee_range, founded_year, socials) and `description` becomes required on every
+offering and competency, with the prompt spelling out what a competency description is: the
+evidence-backed reason the company has it (a certification held, a technology named on a product
+page, a case study in that industry), not a restatement of its name. Facts write into `companies`
+on every run. The company-summary embedding text becomes `"{name} — {company_type} in
+{hq_city}, {hq_country}. {industry}. {overview}"` so a query like "robotics manufacturer in
+Germany" lands on the summary row, not only on an offering.
+
+**Catalogue API.** `GET /tenants/current/catalogue` with optional `country`, `company_type`,
+`industry`, `competency_kind`, `tag`, and `q`. Filters are SQL; `q` runs the existing semantic
+search first and intersects. `GET /tenants/current/catalogue/facets` returns the distinct values
+and counts behind each filter so the UI never shows an option with zero results. Both viewer-role.
+
+**Catalogue UI.** A `/catalogue` page per workspace: filter rail on the left (country, type,
+industry, competency kind, tag), company cards on the right showing name, country/type/industry
+line, overview excerpt, first few offerings and competencies each with its description. The
+company profile header shows every fact, and offerings/competencies render their descriptions
+under the name. A "Re-profile now" button on the profile (member role, quota-checked) so existing
+companies pick up the new fields without waiting for the scheduler.
+
+**Backfill.** A migration makes both `description` columns `NOT NULL DEFAULT ''`; nothing
+rewrites history — the next re-profile (scheduled or manual) fills them.
+
+## 12. Phase 7 — workspace API keys
+
+**Storage and crypto.** `app/core/crypto.py` (envelope encryption as above), `tenant_credentials`
+table, `services/credentials.py` with `set_credential`, `remove_credential`, `get_plaintext` (only
+ever called by services that are about to make the call, never by a router). Adding or removing a
+key is audited; the audit row carries `last4`, never the key.
+
+**Validation on save.** An Anthropic key is checked with a minimal `messages.create` (a one-token
+reply) before it's stored; a Browser Use key with `GET /api/v2/me` (or the cheapest authenticated
+read the API exposes). A key that fails is rejected with the provider's own error, not stored.
+
+**Resolution.** `services/llm.py::anthropic_client_for(tenant)` returns a client on the tenant's
+key when one exists, else the platform key, and reports which — every model call site (extraction,
+visual agent, chat) goes through it. `assert_within_quota` short-circuits for a tenant on its own
+key; `record_usage_event` writes `billed_to`.
+
+**Settings UI.** `/settings/keys` (admin/owner): one row per provider — masked `last4`, when it was
+validated, replace/remove. The scraping-provider choice (Phase 8) lives on the same page.
+
+## 13. Phase 8 — Browser Use Cloud as a Tier 2 provider
+
+**Client.** `app/scraping/browser_use_cloud.py`: `POST /tasks` with the profiling instruction as
+`task`, `startUrl` = the company's website, `allowedDomains` = its domain, `maxSteps` = 30,
+`structuredOutput` = `ExtractedProfile`'s JSON schema, `llm` = a fixed Browser Use-supported model
+name held in one constant. Poll `GET /tasks/{id}` on a backoff until `finished` or `stopped`, with
+a hard 10-minute ceiling; on ceiling, the run is failed locally (a client timeout does not cancel
+the remote run, and this pipeline never retries it). `output` parses into `ExtractedProfile`;
+each step's `screenshotUrl` is downloaded into the shared storage volume and recorded as a
+`scrape_pages` row with its `url` and `screenshot_key`, so evidence works identically to the custom
+agent.
+
+**Dispatch and merge.** A deep-mode job reads the tenant's `scrape_provider`. `custom` runs today's
+loop unchanged. `browser_use_cloud` runs Tier 0 + Tier 1 as usual (cheap, and it's what a site
+with nothing hidden needs) and then the cloud task; the two profiles merge by case-insensitive
+offering/competency name, keeping whichever copy has the longer description and the union of their
+evidence. Facts prefer the Tier 1 result and fall back per field.
+
+**Keys and metering.** The Browser Use key resolves tenant-first, then `BROWSER_USE_API_KEY` from
+the environment; no key at all means the provider option is greyed out in settings. A run writes
+one `usage_events` row of kind `BROWSER_USE_RUN` with `steps` in metadata and a per-step cost
+constant, counted against `deep_runs_per_month` exactly like a custom deep run.
+
+## 14. Phase 9 — chat
+
+**Retrieval.** Embed the question, take the top 12 `embeddings` rows across the tenant (the same
+`cosine_distance` query as search, without the per-company dedupe — an answer wants every relevant
+row), group by company, and render a context block per company: name, facts line, overview, then
+each retrieved offering/competency with its description. The optional catalogue filters from
+Phase 6 apply to retrieval, so "which of my German accounts…" narrows before ranking rather than
+hoping the model does it.
+
+**Generation.** `claude-sonnet-5` on the resolved key, a system prompt that forbids answering from
+anything outside the context and requires `[Company Name]` citations, streamed to the browser as
+Server-Sent Events from a `StreamingResponse` — no Redis stream, no resume; a dropped connection
+loses the in-flight reply and the client re-asks. Conversation history (last 10 turns) rides along
+as prior messages; retrieval runs on the latest question only.
+
+**Persistence and limits.** Every user and assistant message is a `messages` row; the assistant
+row carries `citations` — `[{company_id, source_kind, source_id}]` resolved from the context the
+model was given, so a citation is always a real row, never a hallucinated name. One user message
+counts one `CHAT` usage event against `chat_messages_per_month`, skipped for a tenant on its own
+key. Conversations are personal (owner-scoped, like saved searches).
+
+**UI.** `/chat`: conversation list on the left, thread on the right, streamed tokens, citation
+chips under each answer linking to the company's profile, and the Phase 6 filter rail collapsed
+above the composer for scoping a question.
+
+## 15. Phases
+
+| Phase | Deliverable | Est. |
+|---|---|---|
+| 6 | Facts extraction, mandatory descriptions, company type/country, catalogue API + UI + facets, richer profile header, re-profile-now | 1–2 wk |
+| 7 | Envelope crypto, tenant credentials (Anthropic + Browser Use), validation on save, key resolution, BYOK quota exemption, settings UI | 1 wk |
+| 8 | Browser Use Cloud client, provider dispatch + merge, screenshot evidence, metering | 1 wk |
+| 9 | Conversations/messages, retrieval + streamed generation with citations, chat quota, chat UI | 1–2 wk |
+
+Each phase is its own branch and pull request, as before.

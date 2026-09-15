@@ -13,6 +13,7 @@ from app.routers.v1 import (
     admin,
     audit,
     auth,
+    catalogue,
     companies,
     contacts,
     health,
@@ -51,6 +52,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(members.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
+app.include_router(catalogue.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(notes.router, prefix="/api/v1")
 app.include_router(imports.router, prefix="/api/v1")

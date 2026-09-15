@@ -32,6 +32,26 @@ services:
       timeout: 3s
       retries: 10
 
+  # Self-hosted embeddings — Qwen3-Embedding-0.6B, 1024 dimensions, fixed in the schema (see
+  # docs/PLAN.md §1 and the embeddings migration). `--auto-truncate` and a `--max-batch-tokens`
+  # far below the model's own 32768-token window are load-bearing, not tuning: at the default,
+  # this model's warmup batch allocates enough memory to get OOM-killed on a modest dev machine
+  # before the server ever comes up — found by actually running it, not by reading the flag docs.
+  # The backend also caps concurrent requests at 4 regardless of `--max-client-batch-size`.
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    command: ["--model-id", "Qwen/Qwen3-Embedding-0.6B", "--auto-truncate", "--max-batch-tokens", "2048"]
+    volumes:
+      - tei_data:/data
+    ports:
+      - "18080:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
   api:
     build:
       context: ../apps/api
@@ -46,6 +66,7 @@ services:
       CORS_ORIGINS: '["http://rescope.localhost:3000"]'
       DEBUG: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMBEDDINGS_URL: http://embeddings:80
     ports:
       - "8000:8000"
     depends_on:
@@ -66,6 +87,7 @@ services:
       ROOT_DOMAIN: rescope.localhost
       DEBUG: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMBEDDINGS_URL: http://embeddings:80
     depends_on:
       api:
         condition: service_started
@@ -82,9 +104,12 @@ services:
       APP_DATABASE_URL: postgresql+asyncpg://rescope_app:rescope_app_dev_only@postgres:5432/rescope
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMBEDDINGS_URL: http://embeddings:80
     depends_on:
       api:
         condition: service_started
+      embeddings:
+        condition: service_healthy
 
   web:
     build:
@@ -108,3 +133,4 @@ services:
 
 volumes:
   postgres_data:
+  tei_data:

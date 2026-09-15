@@ -81,3 +81,15 @@ class ScrapeJobResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class SearchHitResponse(BaseModel):
+    company: CompanyResponse
+    source_kind: str
+    content: str
+    distance: float
+
+
+class SimilarCompanyResponse(BaseModel):
+    company: CompanyResponse
+    distance: float

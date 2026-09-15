@@ -106,3 +106,24 @@ export async function listScrapeJobs(companyId: string): Promise<ScrapeJob[]> {
   await throwIfNotOk(res);
   return (await res.json()) as ScrapeJob[];
 }
+
+export type SearchHit = {
+  company: Company;
+  source_kind: string;
+  content: string;
+  distance: number;
+};
+
+export type SimilarCompany = { company: Company; distance: number };
+
+export async function searchCompanies(query: string): Promise<SearchHit[]> {
+  const res = await tenantFetch(`/api/v1/tenants/current/search?${new URLSearchParams({ q: query })}`);
+  await throwIfNotOk(res);
+  return (await res.json()) as SearchHit[];
+}
+
+export async function getSimilarCompanies(companyId: string): Promise<SimilarCompany[]> {
+  const res = await tenantFetch(`/api/v1/tenants/current/companies/${companyId}/similar`);
+  await throwIfNotOk(res);
+  return (await res.json()) as SimilarCompany[];
+}

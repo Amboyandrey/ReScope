@@ -4,6 +4,7 @@ of what it did and cost. Pure orchestration; the actual work lives in discovery.
 extraction.py so each stays independently testable.
 """
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -11,10 +12,21 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.models import Company, Competency, Offering, ProfileStatus, ScrapeJob, ScrapePage, ScrapeStatus
+from app.models import (
+    Company,
+    Competency,
+    Embedding,
+    Offering,
+    ProfileStatus,
+    ScrapeJob,
+    ScrapePage,
+    ScrapeStatus,
+    SourceKind,
+)
 from app.scraping.discovery import discover_candidate_urls
 from app.scraping.extraction import extract_profile
 from app.scraping.render import render_pages
+from app.services.embeddings import MODEL_NAME, embed_texts
 
 MAX_CANDIDATE_PAGES = 12
 # Sonnet 5 pricing at the time this was written — see docs/PLAN.md §5. A config constant, not a
@@ -86,40 +98,93 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
         await db.execute(
             delete(Offering).where(Offering.tenant_id == company.tenant_id, Offering.company_id == company.id)
         )
-        for item in result.profile.offerings:
-            db.add(
-                Offering(
-                    tenant_id=company.tenant_id,
-                    company_id=company.id,
-                    kind=item.kind,
-                    name=item.name,
-                    description=item.description,
-                    category=item.category,
-                    evidence=[e.model_dump() for e in item.evidence],
-                )
+        offerings = [
+            Offering(
+                tenant_id=company.tenant_id,
+                company_id=company.id,
+                kind=item.kind,
+                name=item.name,
+                description=item.description,
+                category=item.category,
+                evidence=[e.model_dump() for e in item.evidence],
             )
+            for item in result.profile.offerings
+        ]
+        db.add_all(offerings)
 
         await db.execute(
             delete(Competency).where(
                 Competency.tenant_id == company.tenant_id, Competency.company_id == company.id
             )
         )
-        for comp_item in result.profile.competencies:
-            db.add(
-                Competency(
-                    tenant_id=company.tenant_id,
-                    company_id=company.id,
-                    kind=comp_item.kind,
-                    name=comp_item.name,
-                    description=comp_item.description,
-                    evidence=[e.model_dump() for e in comp_item.evidence],
-                )
+        competencies = [
+            Competency(
+                tenant_id=company.tenant_id,
+                company_id=company.id,
+                kind=comp_item.kind,
+                name=comp_item.name,
+                description=comp_item.description,
+                evidence=[e.model_dump() for e in comp_item.evidence],
             )
+            for comp_item in result.profile.competencies
+        ]
+        db.add_all(competencies)
+
+        # Flushed (not committed) so the mapper's own flush-time id default (UUIDPrimaryKeyMixin)
+        # actually populates offering.id/competency.id — needed as embeddings' own source_id.
+        await db.flush()
+        await _embed_profile(db, company=company, offerings=offerings, competencies=competencies)
 
     job.status = ScrapeStatus.DONE
     job.finished_at = datetime.now(UTC)
     company.profile_status = ProfileStatus.DONE
     company.last_profiled_at = job.finished_at
+
+
+async def _embed_profile(
+    db: AsyncSession, *, company: Company, offerings: list[Offering], competencies: list[Competency]
+) -> None:
+    """Embed the company's summary plus every offering and competency, replacing whatever this
+    company had before. Best-effort: a down or slow embeddings service degrades the company to
+    "profiled but not yet searchable" rather than failing a scrape that otherwise succeeded — the
+    next re-profile embeds it again, and search simply excludes it until then.
+    """
+    texts: list[str] = []
+    sources: list[tuple[SourceKind, uuid.UUID]] = []
+    if company.overview:
+        texts.append(company.overview)
+        sources.append((SourceKind.COMPANY_SUMMARY, company.id))
+    for offering in offerings:
+        texts.append(f"{offering.name}: {offering.description}" if offering.description else offering.name)
+        sources.append((SourceKind.OFFERING, offering.id))
+    for competency in competencies:
+        texts.append(
+            f"{competency.name}: {competency.description}" if competency.description else competency.name
+        )
+        sources.append((SourceKind.COMPETENCY, competency.id))
+    if not texts:
+        return
+
+    try:
+        vectors = await embed_texts(texts)
+    except Exception:  # noqa: BLE001 — see this function's own docstring
+        return
+
+    await db.execute(
+        delete(Embedding).where(Embedding.tenant_id == company.tenant_id, Embedding.company_id == company.id)
+    )
+    for (source_kind, source_id), text, vector in zip(sources, texts, vectors, strict=True):
+        db.add(
+            Embedding(
+                tenant_id=company.tenant_id,
+                company_id=company.id,
+                source_kind=source_kind,
+                source_id=source_id,
+                content=text,
+                embedding=vector,
+                model=MODEL_NAME,
+            )
+        )
 
 
 __all__ = ["run_scrape_job", "MAX_CANDIDATE_PAGES"]

@@ -1,6 +1,12 @@
 """The scrape pipeline end to end at the service layer — discovery, render, and extraction are
 each mocked (they have their own dedicated tests), so this is purely about the orchestration:
-does a successful run write the right rows, and does a failure leave the company in FAILED."""
+does a successful run write the right rows, and does a failure leave the company in FAILED.
+
+Embedding calls are mocked too rather than left to hit a real (or absent) TEI service: without
+the mock, a developer running these tests with `docker compose up embeddings` locally gets silent,
+real network calls that pass by accident, while CI (no embeddings service in its job) gets the
+pipeline's own graceful-degradation path instead — neither actually exercises the embedding step.
+"""
 
 import uuid
 from unittest.mock import AsyncMock
@@ -11,7 +17,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.models import Company, Competency, Offering, ProfileStatus, ScrapeJob, ScrapeStatus
+from app.models import (
+    Company,
+    Competency,
+    Embedding,
+    Offering,
+    ProfileStatus,
+    ScrapeJob,
+    ScrapeStatus,
+    SourceKind,
+)
+from app.models.embedding import EMBEDDING_DIMENSIONS
 from app.scraping import pipeline
 from app.scraping.extraction import (
     ExtractedCompetency,
@@ -24,12 +40,24 @@ from app.scraping.render import RenderedPage
 from tests.helpers import create_tenant, tenant_headers
 
 
+def _fake_vector(seed: float) -> list[float]:
+    return [seed] * EMBEDDING_DIMENSIONS
+
+
 @pytest.fixture(autouse=True)
 def _stub_enqueue(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop_enqueue(*, job_id: uuid.UUID, tenant_id: uuid.UUID, company_id: uuid.UUID) -> None:
         del job_id, tenant_id, company_id
 
     monkeypatch.setattr("app.routers.v1.companies.enqueue_scrape_job", _noop_enqueue)
+
+
+@pytest.fixture(autouse=True)
+def _stub_embed_texts(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
+        return [_fake_vector(float(i)) for i in range(len(texts))]
+
+    monkeypatch.setattr(pipeline, "embed_texts", _fake_embed_texts)
 
 
 async def _create_company(client: AsyncClient, db: AsyncSession) -> tuple[Company, ScrapeJob]:
@@ -109,6 +137,15 @@ async def test_successful_run_writes_profile_and_marks_done(client: AsyncClient,
     assert offerings[0].evidence == [{"url": "https://example.com", "quote": "We make widgets"}]
     assert [c.name for c in competencies] == ["Widget-forging"]
 
+    embeddings = list((await db.scalars(select(Embedding).where(Embedding.company_id == company.id))).all())
+    by_kind = {e.source_kind: e for e in embeddings}
+    assert set(by_kind) == {SourceKind.COMPANY_SUMMARY, SourceKind.OFFERING, SourceKind.COMPETENCY}
+    assert by_kind[SourceKind.COMPANY_SUMMARY].source_id == company.id
+    assert by_kind[SourceKind.OFFERING].source_id == offerings[0].id
+    assert by_kind[SourceKind.OFFERING].content == "Widget"
+    assert by_kind[SourceKind.COMPETENCY].source_id == competencies[0].id
+    assert len(by_kind[SourceKind.COMPANY_SUMMARY].embedding) == EMBEDDING_DIMENSIONS
+
     refreshed_job = await db.get(ScrapeJob, job.id)
     assert refreshed_job is not None
     assert refreshed_job.status == ScrapeStatus.DONE
@@ -159,3 +196,52 @@ async def test_worker_marks_job_and_company_failed_on_exception(
     assert refreshed_company.profile_status == ProfileStatus.FAILED
     assert refreshed_job.status == ScrapeStatus.FAILED
     assert refreshed_job.error is not None and "boom" in refreshed_job.error
+
+
+async def test_embedding_failure_does_not_fail_the_job(client: AsyncClient, db: AsyncSession) -> None:
+    """A down or slow embeddings service degrades the company to searchable-later, not FAILED."""
+    company, job = await _create_company(client, db)
+
+    fake_result = ExtractionResult(
+        profile=ExtractedProfile(
+            overview="Acme makes example widgets.",
+            offerings=[
+                ExtractedOffering(
+                    kind="product",
+                    name="Widget",
+                    description=None,
+                    category=None,
+                    evidence=[ExtractedEvidence(url="https://example.com", quote="We make widgets")],
+                )
+            ],
+            competencies=[],
+        ),
+        tokens_in=10,
+        tokens_out=5,
+    )
+    rendered = [
+        RenderedPage(
+            url="https://example.com",
+            final_url="https://example.com",
+            status_code=200,
+            markdown="# Acme",
+            content_hash="abc",
+        )
+    ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=["https://example.com"]))
+        mp.setattr(pipeline, "render_pages", AsyncMock(return_value=rendered))
+        mp.setattr(pipeline, "extract_profile", AsyncMock(return_value=fake_result))
+        mp.setattr(pipeline, "embed_texts", AsyncMock(side_effect=ConnectionError("embeddings down")))
+        await pipeline.run_scrape_job(db, job=job, company=company)
+        await db.commit()
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed = await db.get(Company, company.id)
+    assert refreshed is not None
+    assert refreshed.profile_status == ProfileStatus.DONE  # extraction still succeeded
+    assert refreshed.overview == "Acme makes example widgets."
+
+    embeddings = list((await db.scalars(select(Embedding).where(Embedding.company_id == company.id))).all())
+    assert embeddings == []

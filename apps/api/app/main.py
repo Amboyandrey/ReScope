@@ -19,6 +19,7 @@ from app.routers.v1 import (
     invitations,
     members,
     notes,
+    saved_searches,
     search,
     tags,
     tenants,
@@ -52,6 +53,7 @@ app.include_router(companies.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(notes.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
+app.include_router(saved_searches.router, prefix="/api/v1")
 app.include_router(tags.tags_router, prefix="/api/v1")
 app.include_router(tags.company_tags_router, prefix="/api/v1")
 app.include_router(invitations.tenant_router, prefix="/api/v1")

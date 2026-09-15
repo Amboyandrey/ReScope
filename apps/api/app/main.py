@@ -18,6 +18,7 @@ from app.routers.v1 import (
     health,
     invitations,
     members,
+    notes,
     search,
     tenants,
 )
@@ -48,6 +49,7 @@ app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(members.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
+app.include_router(notes.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(invitations.tenant_router, prefix="/api/v1")
 app.include_router(invitations.token_router, prefix="/api/v1")

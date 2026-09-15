@@ -77,6 +77,13 @@ services:
       args:
         NEXT_PUBLIC_API_URL: http://api.rescope.localhost:8000
         NEXT_PUBLIC_ROOT_DOMAIN: rescope.localhost
+        NEXT_PUBLIC_ROOT_URL: http://rescope.localhost:3000
+    environment:
+      # Server-side only (no NEXT_PUBLIC_ prefix): the container-network address the Next.js
+      # server itself uses for its own SSR fetches, e.g. the tenant membership check in
+      # app/t/[slug]/layout.tsx — the browser-facing NEXT_PUBLIC_API_URL above doesn't resolve
+      # from inside this container, only from the host/browser.
+      API_INTERNAL_URL: http://api:8000
     ports:
       - "3000:3000"
     depends_on:

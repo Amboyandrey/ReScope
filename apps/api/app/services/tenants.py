@@ -101,13 +101,14 @@ async def set_chat_model(db: AsyncSession, *, tenant: Tenant, provider: Provider
     """Switch which provider and model answer this tenant's chat messages (docs/PLAN.md §18).
 
     Refuses a provider the tenant has no usable key for — Anthropic falls back to the platform's
-    own key like every other Anthropic call, but the other three providers have no platform key,
-    so a tenant must register its own before picking one. Refuses a model that doesn't actually
-    answer on that key too, so a typo'd model id fails here rather than on the next chat message.
+    own key like every other Anthropic call, but the other providers have no platform key, so a
+    tenant must register its own before picking one. Refuses a model that doesn't actually answer
+    on that key too, so a typo'd model id fails here rather than on the next chat message.
     """
     if provider not in CHAT_PROVIDERS:
         raise CredentialValidationFailed(f"{provider.value.title()} isn't a chat provider.")
 
+    base_url = None
     if provider == Provider.ANTHROPIC:
         api_key = (await resolve_anthropic_key(db, tenant_id=tenant.id)).api_key
     else:
@@ -115,8 +116,9 @@ async def set_chat_model(db: AsyncSession, *, tenant: Tenant, provider: Provider
         if credential is None:
             raise ChatKeyRequired()
         api_key = decrypt_credential_key(credential)
+        base_url = credential.base_url
 
-    await validate_chat_model(provider, api_key, model)
+    await validate_chat_model(provider, api_key, model, base_url=base_url)
     tenant.settings = {**tenant.settings, "chat": {"provider": provider.value, "model": model}}
     await db.flush()
     return tenant

@@ -125,7 +125,7 @@ async def send_message(
     tenant_id = ctx.tenant.id
 
     async def stream() -> AsyncIterator[str]:
-        provider = build_chat_provider(resolved.provider, resolved.api_key)
+        provider = build_chat_provider(resolved.provider, resolved.api_key, base_url=resolved.base_url)
         system_prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context}" if context else SYSTEM_PROMPT
         chat_messages = [*history, {"role": "user", "content": body.content}]
         answer = ""

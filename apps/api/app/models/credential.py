@@ -22,6 +22,9 @@ class Provider(enum.StrEnum):
     OPENAI = "openai"
     GEMINI = "gemini"
     NEBIUS = "nebius"
+    # A workspace's own OpenAI-compatible server (docs/PLAN.md §20-22) — the only provider whose
+    # `TenantCredential` row carries a `base_url`, since there's no constant to fall back to.
+    CUSTOM = "custom"
 
 
 class TenantCredential(Base, UUIDPrimaryKeyMixin):
@@ -38,6 +41,9 @@ class TenantCredential(Base, UUIDPrimaryKeyMixin):
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     nonce: Mapped[bytes] = mapped_column(LargeBinary)
     wrapped_key: Mapped[bytes] = mapped_column(LargeBinary)
+    # Only set for `Provider.CUSTOM` — every other provider's endpoint is a constant in
+    # app/llm/factory.py, not something a workspace registers.
+    base_url: Mapped[str | None] = mapped_column(String(2048), default=None)
     # The key's last 4 characters, so a settings page can show which key is registered without
     # ever decrypting it just to display it.
     last4: Mapped[str] = mapped_column(String(4))

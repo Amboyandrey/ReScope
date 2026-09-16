@@ -41,12 +41,15 @@ class ResolvedChatModel:
     model: str
     api_key: str
     billed_to: UsageBilledTo
+    # Only set for `Provider.CUSTOM` (docs/PLAN.md §22) — every other provider has a constant
+    # endpoint `build_chat_provider` already knows.
+    base_url: str | None = None
 
 
 async def resolve_chat_model(db: AsyncSession, *, tenant: Tenant) -> ResolvedChatModel:
     """The provider, model, and key this tenant's chat messages currently run on (docs/PLAN.md
     §18). Anthropic falls back to the platform's own key like every other Anthropic call; the
-    other three providers have no platform key, so a tenant configured for one of them must have
+    other providers have no platform key, so a tenant configured for one of them must have
     registered its own (`set_chat_model` refuses to save that choice otherwise)."""
     provider, model = tenant.chat_provider, tenant.chat_model
     if provider == Provider.ANTHROPIC:
@@ -63,6 +66,7 @@ async def resolve_chat_model(db: AsyncSession, *, tenant: Tenant) -> ResolvedCha
         model=model,
         api_key=decrypt_credential_key(credential),
         billed_to=UsageBilledTo.TENANT,
+        base_url=credential.base_url,
     )
 
 

@@ -70,10 +70,31 @@ async def _validate_openai_compatible_key(provider: Provider, api_key: str) -> N
         ) from exc
 
 
-async def validate_chat_model(provider: Provider, api_key: str, model: str) -> None:
+async def _validate_custom_endpoint(base_url: str, api_key: str) -> None:
+    """A workspace's own OpenAI-compatible server rarely implements `GET /models` reliably
+    (docs/PLAN.md §20) — this only proves `base_url` points at a real, reachable server. Any HTTP
+    response counts, even a 401 or 404; only a connection failure fails this. The one-token
+    `validate_chat_model` call at chat-model-save time is what actually proves the key and a
+    specific model work together."""
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise CredentialValidationFailed(f"Could not reach {base_url!r} to validate this key.") from exc
+
+
+async def validate_chat_model(
+    provider: Provider, api_key: str, model: str, *, base_url: str | None = None
+) -> None:
     """Prove a specific model actually answers on this key — a one-token reply, the same "prove
     it works, do no real work" rule credential validation follows. Raised errors are the
-    provider's own, surfaced verbatim so a typo'd model id fails with a message that says so."""
+    provider's own, surfaced verbatim so a typo'd model id fails with a message that says so.
+
+    `base_url` is only meaningful for `Provider.CUSTOM`, whose endpoint the caller resolved from
+    the workspace's own stored credential rather than a constant — ignored for every other
+    provider, which already has one.
+    """
     if provider == Provider.ANTHROPIC:
         client = anthropic.AsyncAnthropic(api_key=api_key)
         try:
@@ -86,7 +107,8 @@ async def validate_chat_model(provider: Provider, api_key: str, model: str) -> N
             raise CredentialValidationFailed("Could not reach Anthropic to validate this model.") from exc
         return
 
-    openai_client = openai.AsyncOpenAI(api_key=api_key, base_url=OPENAI_COMPATIBLE_BASE_URLS[provider])
+    resolved_base_url = base_url if provider == Provider.CUSTOM else OPENAI_COMPATIBLE_BASE_URLS[provider]
+    openai_client = openai.AsyncOpenAI(api_key=api_key, base_url=resolved_base_url)
     try:
         await openai_client.chat.completions.create(
             model=model, max_tokens=1, messages=[{"role": "user", "content": "hi"}]
@@ -111,11 +133,26 @@ _VALIDATORS: dict[Provider, Callable[[str], Awaitable[None]]] = {
 
 
 async def set_credential(
-    db: AsyncSession, *, tenant_id: uuid.UUID, created_by: uuid.UUID, provider: Provider, api_key: str
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    created_by: uuid.UUID,
+    provider: Provider,
+    api_key: str,
+    base_url: str | None = None,
 ) -> TenantCredential:
     """Validate a key against its own provider, then store it encrypted — replacing any existing
-    key for this provider (`UNIQUE(tenant_id, provider)`), never storing one unvalidated."""
-    await _VALIDATORS[provider](api_key)
+    key for this provider (`UNIQUE(tenant_id, provider)`), never storing one unvalidated.
+
+    `base_url` is only stored for `Provider.CUSTOM` — every other provider's endpoint is a
+    constant, so a value passed for one is silently dropped rather than trusted."""
+    if provider == Provider.CUSTOM:
+        if not base_url:
+            raise CredentialValidationFailed("The custom provider requires a base_url.")
+        await _validate_custom_endpoint(base_url, api_key)
+    else:
+        base_url = None
+        await _VALIDATORS[provider](api_key)
 
     secret = encrypt_secret(api_key)
     stmt = (
@@ -126,6 +163,7 @@ async def set_credential(
             ciphertext=secret.ciphertext,
             nonce=secret.nonce,
             wrapped_key=secret.wrapped_key,
+            base_url=base_url,
             last4=api_key[-4:],
             created_by=created_by,
         )
@@ -135,6 +173,7 @@ async def set_credential(
                 "ciphertext": secret.ciphertext,
                 "nonce": secret.nonce,
                 "wrapped_key": secret.wrapped_key,
+                "base_url": base_url,
                 "last4": api_key[-4:],
                 "created_by": created_by,
                 "validated_at": pg_insert(TenantCredential).excluded.validated_at,

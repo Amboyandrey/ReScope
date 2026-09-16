@@ -24,6 +24,8 @@ class UsageKind(enum.StrEnum):
     # A Browser Use Cloud deep-mode run (docs/PLAN.md §13) — counted against deep_runs_per_month
     # exactly like DEEP_PROFILE, kept as its own kind only so usage views can tell them apart.
     BROWSER_USE_RUN = "browser_use_run"
+    # One user chat message (docs/PLAN.md §14) — counted against chat_messages_per_month.
+    CHAT = "chat"
 
 
 class UsageBilledTo(enum.StrEnum):
@@ -43,7 +45,9 @@ class UsageEvent(Base, UUIDPrimaryKeyMixin):
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
-    job_id: Mapped[uuid.UUID] = mapped_column()
+    # Null for a kind with no scrape job behind it (CHAT, docs/PLAN.md §14) — the composite FK
+    # below simply isn't checked when this is null, Postgres's normal MATCH SIMPLE behavior.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     kind: Mapped[UsageKind] = mapped_column(Enum(UsageKind, name="usage_kind"))
     model: Mapped[str] = mapped_column(String(120))
     tokens_in: Mapped[int] = mapped_column(Integer)

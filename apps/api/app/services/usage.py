@@ -14,7 +14,7 @@ async def record_usage_event(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
-    job_id: uuid.UUID,
+    job_id: uuid.UUID | None,
     kind: UsageKind,
     model: str,
     tokens_in: int,

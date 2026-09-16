@@ -3,7 +3,7 @@ usage ledger (app/services/usage.py) does the counting for."""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import QuotaExceeded
+from app.core.errors import ChatQuotaExceeded, QuotaExceeded
 from app.models import Plan, ScrapeMode, Tenant, UsageKind
 from app.services.llm import has_own_anthropic_key
 from app.services.usage import count_this_month
@@ -40,4 +40,16 @@ async def assert_within_quota(db: AsyncSession, *, tenant: Tenant, mode: ScrapeM
         raise QuotaExceeded()
 
 
-__all__ = ["assert_within_quota"]
+async def assert_within_chat_quota(db: AsyncSession, *, tenant: Tenant) -> None:
+    """Raise `ChatQuotaExceeded` if sending one more chat message would put the tenant over its
+    plan's monthly limit — same BYOK exemption as `assert_within_quota` (docs/PLAN.md §12)."""
+    if await has_own_anthropic_key(db, tenant_id=tenant.id):
+        return
+    plan = await db.get(Plan, tenant.plan_id)
+    assert plan is not None
+    used = await count_this_month(db, tenant_id=tenant.id, kind=UsageKind.CHAT)
+    if used >= plan.chat_messages_per_month:
+        raise ChatQuotaExceeded()
+
+
+__all__ = ["assert_within_chat_quota", "assert_within_quota"]

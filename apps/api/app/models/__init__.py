@@ -10,6 +10,7 @@ from app.models.company import (
     OfferingKind,
     ProfileStatus,
 )
+from app.models.conversation import Conversation, Message, MessageRole
 from app.models.credential import Provider, TenantCredential
 from app.models.crm import CompanyTag, Contact, Note, SavedSearch, Tag
 from app.models.embedding import EMBEDDING_DIMENSIONS, Embedding, SourceKind
@@ -32,12 +33,15 @@ __all__ = [
     "Competency",
     "CompetencyKind",
     "Contact",
+    "Conversation",
     "Embedding",
     "Import",
     "ImportKind",
     "ImportStatus",
     "Invitation",
     "Membership",
+    "Message",
+    "MessageRole",
     "Note",
     "Offering",
     "OfferingKind",

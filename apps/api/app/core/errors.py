@@ -145,3 +145,13 @@ class CredentialValidationFailed(AppError):
 class BrowserUseKeyRequired(AppError):
     status_code = 422
     detail = "Register a Browser Use key (or ask the platform to enable one) before switching to it."
+
+
+class ConversationNotFound(AppError):
+    status_code = 404
+    detail = "Conversation not found."
+
+
+class ChatQuotaExceeded(AppError):
+    status_code = 402
+    detail = "This tenant's plan chat quota is used up for this month."

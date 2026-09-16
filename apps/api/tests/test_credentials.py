@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import anthropic
 import httpx
+import openai
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -22,6 +23,7 @@ from app.services.credentials import (
     list_credentials,
     remove_credential,
     set_credential,
+    validate_chat_model,
 )
 from app.services.llm import has_own_anthropic_key, resolve_anthropic_key
 from app.services.quotas import assert_within_quota
@@ -45,6 +47,34 @@ def _mock_anthropic_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_create = AsyncMock(side_effect=error)
     monkeypatch.setattr(
         anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(messages=SimpleNamespace(create=mock_create))
+    )
+
+
+def _mock_openai_compatible_models_list(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
+    async def list_impl() -> object:
+        if not ok:
+            request = httpx.Request("GET", "https://api.openai.com/v1/models")
+            response = httpx.Response(401, request=request)
+            raise openai.APIStatusError("invalid api key", response=response, body=None)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        openai, "AsyncOpenAI", lambda **_: SimpleNamespace(models=SimpleNamespace(list=list_impl))
+    )
+
+
+def _mock_openai_compatible_chat_create(monkeypatch: pytest.MonkeyPatch, *, ok: bool) -> None:
+    async def create_impl(**_: object) -> object:
+        if not ok:
+            request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+            response = httpx.Response(404, request=request)
+            raise openai.APIStatusError("model not found", response=response, body=None)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        openai,
+        "AsyncOpenAI",
+        lambda **_: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_impl))),
     )
 
 
@@ -134,6 +164,56 @@ async def test_set_credential_validates_browser_use_key(
         api_key="bu-good",
     )
     assert credential.provider == Provider.BROWSER_USE
+
+
+@pytest.mark.parametrize("provider", [Provider.OPENAI, Provider.GEMINI, Provider.NEBIUS])
+async def test_set_credential_validates_openai_compatible_providers(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    _mock_openai_compatible_models_list(monkeypatch, ok=False)
+    with pytest.raises(CredentialValidationFailed):
+        await set_credential(
+            db, tenant_id=tenant_id, created_by=await _user_id(db), provider=provider, api_key="bad-key"
+        )
+
+    _mock_openai_compatible_models_list(monkeypatch, ok=True)
+    credential = await set_credential(
+        db, tenant_id=tenant_id, created_by=await _user_id(db), provider=provider, api_key="good-key"
+    )
+    assert credential.provider == provider
+
+
+async def test_validate_chat_model_surfaces_anthropics_own_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_anthropic_rejects(monkeypatch)
+    with pytest.raises(CredentialValidationFailed):
+        await validate_chat_model(Provider.ANTHROPIC, "sk-ant-bad", "claude-sonnet-5")
+
+
+async def test_validate_chat_model_accepts_a_working_anthropic_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_anthropic_success(monkeypatch)
+    await validate_chat_model(Provider.ANTHROPIC, "sk-ant-good", "claude-sonnet-5")
+
+
+@pytest.mark.parametrize("provider", [Provider.OPENAI, Provider.GEMINI, Provider.NEBIUS])
+async def test_validate_chat_model_surfaces_an_openai_compatible_rejection(
+    monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    _mock_openai_compatible_chat_create(monkeypatch, ok=False)
+    with pytest.raises(CredentialValidationFailed):
+        await validate_chat_model(provider, "key", "bogus-model")
+
+
+@pytest.mark.parametrize("provider", [Provider.OPENAI, Provider.GEMINI, Provider.NEBIUS])
+async def test_validate_chat_model_accepts_a_working_openai_compatible_model(
+    monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    _mock_openai_compatible_chat_create(monkeypatch, ok=True)
+    await validate_chat_model(provider, "key", "a-real-model")
 
 
 async def test_setting_a_second_key_for_the_same_provider_replaces_it(

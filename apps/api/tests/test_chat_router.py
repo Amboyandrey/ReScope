@@ -6,13 +6,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import anthropic
+import openai
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.models import Company, Embedding, SourceKind, UsageEvent, UsageKind
+from app.models import Company, Embedding, SourceKind, UsageBilledTo, UsageEvent, UsageKind
 from app.services import chat as chat_module
 from app.services.usage import record_usage_event
 from tests.helpers import create_tenant, csrf_headers, signup, tenant_headers
@@ -59,6 +60,31 @@ def _install_fake_anthropic_stream(
         anthropic,
         "AsyncAnthropic",
         lambda **_: SimpleNamespace(messages=SimpleNamespace(stream=fake_stream)),
+    )
+
+
+def _install_fake_openai_chat(monkeypatch: pytest.MonkeyPatch, chunks: list[str]) -> None:
+    """Backs both credential/model validation (`models.list`, a non-streaming `create`) and the
+    real streaming call the chat router makes — the same fake client answers all three."""
+
+    async def list_ok() -> object:
+        return SimpleNamespace()
+
+    async def gen():  # noqa: ANN202
+        for chunk in chunks:
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=chunk))], usage=None)
+        yield SimpleNamespace(choices=[], usage=SimpleNamespace(prompt_tokens=8, completion_tokens=4))
+
+    async def create_impl(**_: object) -> object:
+        return gen()
+
+    monkeypatch.setattr(
+        openai,
+        "AsyncOpenAI",
+        lambda **_: SimpleNamespace(
+            models=SimpleNamespace(list=list_ok),
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create_impl)),
+        ),
     )
 
 
@@ -180,6 +206,44 @@ async def test_send_message_streams_and_persists_both_turns(
     assert chat_events[0].job_id is None
     assert chat_events[0].tokens_in == 42
     assert chat_events[0].tokens_out == 17
+
+
+async def test_send_message_streams_through_a_non_anthropic_provider_and_bills_the_tenant(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers, tenant_id = await _setup(client, db)
+    monkeypatch.setattr(chat_module, "embed_text", AsyncMock(return_value=_vector(0)))
+    _install_fake_openai_chat(monkeypatch, ["Acme makes widgets. ", "See [Acme]."])
+
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "openai", "api_key": "sk-openai-abc"},
+        headers=headers,
+    )
+    await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "openai", "model": "gpt-4o-mini"},
+        headers=headers,
+    )
+
+    created = await client.post("/api/v1/tenants/current/conversations", json={}, headers=headers)
+    conversation_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/tenants/current/conversations/{conversation_id}/messages",
+        json={"content": "What does Acme make?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert "Acme makes widgets." in response.text
+
+    await set_tenant_scope(db, tenant_id)
+    events = list((await db.scalars(select(UsageEvent).where(UsageEvent.tenant_id == tenant_id))).all())
+    chat_events = [e for e in events if e.kind == UsageKind.CHAT]
+    assert len(chat_events) == 1
+    assert chat_events[0].model == "gpt-4o-mini"
+    assert chat_events[0].billed_to == UsageBilledTo.TENANT
+    assert float(chat_events[0].cost_usd) == 0.0
 
 
 async def test_send_message_to_someone_elses_conversation_404s(

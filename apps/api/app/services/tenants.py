@@ -8,10 +8,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.core.errors import BrowserUseKeyRequired, SlugReserved, SlugTaken, TenantNotFound
+from app.core.errors import (
+    BrowserUseKeyRequired,
+    ChatKeyRequired,
+    CredentialValidationFailed,
+    SlugReserved,
+    SlugTaken,
+    TenantNotFound,
+)
 from app.core.slugify import RESERVED_SLUGS, slugify
-from app.models import Membership, Role, ScrapeProvider, Tenant, User
-from app.services.llm import resolve_browser_use_key
+from app.llm import CHAT_PROVIDERS
+from app.models import Membership, Provider, Role, ScrapeProvider, Tenant, User
+from app.services.credentials import decrypt_credential_key, get_active_credential, validate_chat_model
+from app.services.llm import resolve_anthropic_key, resolve_browser_use_key
 
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -84,5 +93,30 @@ async def set_scrape_provider(db: AsyncSession, *, tenant: Tenant, provider: Scr
         if resolved is None:
             raise BrowserUseKeyRequired()
     tenant.settings = {**tenant.settings, "scrape_provider": provider.value}
+    await db.flush()
+    return tenant
+
+
+async def set_chat_model(db: AsyncSession, *, tenant: Tenant, provider: Provider, model: str) -> Tenant:
+    """Switch which provider and model answer this tenant's chat messages (docs/PLAN.md §18).
+
+    Refuses a provider the tenant has no usable key for — Anthropic falls back to the platform's
+    own key like every other Anthropic call, but the other three providers have no platform key,
+    so a tenant must register its own before picking one. Refuses a model that doesn't actually
+    answer on that key too, so a typo'd model id fails here rather than on the next chat message.
+    """
+    if provider not in CHAT_PROVIDERS:
+        raise CredentialValidationFailed(f"{provider.value.title()} isn't a chat provider.")
+
+    if provider == Provider.ANTHROPIC:
+        api_key = (await resolve_anthropic_key(db, tenant_id=tenant.id)).api_key
+    else:
+        credential = await get_active_credential(db, tenant_id=tenant.id, provider=provider)
+        if credential is None:
+            raise ChatKeyRequired()
+        api_key = decrypt_credential_key(credential)
+
+    await validate_chat_model(provider, api_key, model)
+    tenant.settings = {**tenant.settings, "chat": {"provider": provider.value, "model": model}}
     await db.flush()
     return tenant

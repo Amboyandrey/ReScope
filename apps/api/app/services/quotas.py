@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ChatQuotaExceeded, QuotaExceeded
 from app.models import Plan, ScrapeMode, Tenant, UsageKind
-from app.services.llm import has_own_anthropic_key
+from app.services.llm import has_own_anthropic_key, has_own_chat_key
 from app.services.usage import count_this_month
 
 # A DEEP-mode job counts against `deep_runs_per_month` regardless of which Tier 2 provider ran it
@@ -42,8 +42,9 @@ async def assert_within_quota(db: AsyncSession, *, tenant: Tenant, mode: ScrapeM
 
 async def assert_within_chat_quota(db: AsyncSession, *, tenant: Tenant) -> None:
     """Raise `ChatQuotaExceeded` if sending one more chat message would put the tenant over its
-    plan's monthly limit — same BYOK exemption as `assert_within_quota` (docs/PLAN.md §12)."""
-    if await has_own_anthropic_key(db, tenant_id=tenant.id):
+    plan's monthly limit — exempt on its own key for whichever provider it chats on, not just
+    Anthropic (docs/PLAN.md §18 generalizes the single-provider exemption from §12)."""
+    if await has_own_chat_key(db, tenant=tenant):
         return
     plan = await db.get(Plan, tenant.plan_id)
     assert plan is not None

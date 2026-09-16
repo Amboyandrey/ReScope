@@ -470,3 +470,122 @@ fake client, recording `billed_to = tenant` and `cost_usd = 0`.
 | 10 | `ChatProvider` seam with Anthropic + OpenAI-compatible adapters, OpenAI/Gemini/Nebius credentials, per-workspace chat model choice validated on save, quota exemption generalized to any own key, settings UI | 1 wk |
 
 One branch, one pull request, as before.
+
+# Part 4 — any OpenAI-compatible endpoint, and picking a model from the provider's own list
+
+Phase 10 opened chat to four named providers. Two things it left as free text or hardcoded are what
+Part 4 fixes: a workspace that runs its own OpenAI-compatible server (vLLM, Ollama, Together,
+Groq, a company gateway — anything speaking the chat-completions protocol) has no way to point
+chat at it, and the model id is typed by hand against a catalogue the workspace has to look up
+elsewhere. Two small phases, in this order — the model picker should work for the custom endpoint
+too, so the endpoint comes first.
+
+## 20. Decisions
+
+- **A fifth chat provider: bring your own OpenAI-compatible endpoint.** `Provider` gains `CUSTOM`.
+  It rides the same `OpenAICompatibleChat` adapter Phase 10 built for OpenAI, Gemini, and Nebius —
+  the only difference is that its `base_url` comes from the workspace instead of a constant. One
+  custom endpoint per workspace, the same one-row-per-provider shape every other credential has;
+  a second custom slot is out of scope until a workspace actually asks for one.
+- **The base URL lives on the credential, not on the chat choice.** A custom endpoint is a
+  `(base_url, api_key)` pair the way an Anthropic credential is an `api_key` — registering one
+  shouldn't require it to already be the active chat provider, and switching chat away from it
+  and back shouldn't lose it. So `tenant_credentials` grows a nullable `base_url`, set only for
+  `CUSTOM`; `tenants.settings.chat` stays `{provider, model}` exactly as Phase 10 left it.
+- **A custom credential validates by reachability, not by `GET /models`.** Self-hosted servers
+  implement `/chat/completions` reliably and `/models` only sometimes. Saving a custom credential
+  proves the `base_url` points at a real server (any HTTP response, not a connection failure) and
+  stops there; the definitive proof that key, endpoint, and model work together is the one-token
+  `validate_chat_model` call every provider already goes through when the chat model is saved.
+  Phase 10's "cheap authenticated read" was never the real gate — this just admits that for a
+  server whose schema this app can't assume.
+- **Fetch the model list, don't guess it.** Every provider here exposes `GET /models` — Anthropic
+  through its own SDK's `models.list()`, the rest through the OpenAI protocol. A new endpoint
+  returns the ids a workspace's key can actually see, filtered by a short per-provider denylist
+  (embeddings, audio, image, moderation, legacy completion models) so the dropdown shows models a
+  chat call could plausibly use. No caching — it's fetched when a human opens settings, not on a
+  hot path, and a workspace's account can gain access to a new model at any moment.
+- **Free text stays.** The list is an affordance, not a gate — `validate_chat_model` remains the
+  only thing that decides whether a model id is accepted. A model that isn't in the list (brand
+  new, a custom deployment name, a server with no `/models` at all) is still typed and saved
+  exactly as in Phase 10. This keeps §16's promise that provider catalogues change faster than
+  this app will.
+
+## 21. Data model changes
+
+```
+credential_provider (enum)      + CUSTOM
+tenant_credentials              + base_url text NULL   -- set only when provider = CUSTOM
+```
+
+No new tables, nothing new in `tenants.settings`. Phase 12 persists nothing — the model list is
+a live read.
+
+## 22. Phase 11 — a workspace's own OpenAI-compatible endpoint
+
+**Credentials.** `Provider.CUSTOM`. `PUT /tenants/current/credentials` accepts an optional
+`base_url`, required when `provider = custom` and rejected for any other provider (422 either
+way). `set_credential` stores it on the row; `CredentialResponse` returns it, so the settings page
+can show which endpoint a custom credential points at. Validation for `CUSTOM` is a single
+`GET {base_url}/models` that accepts any HTTP status — 200, 401, 404 all mean "a server answered
+there" — and fails only on a connection error or a malformed URL. `base_url` must be `http(s)`;
+nothing else is checked about its shape.
+
+**Provider seam.** `build_chat_provider(provider, api_key, *, base_url=None)`: `CUSTOM` requires
+`base_url` and hands it to `OpenAICompatibleChat` as-is; every other provider ignores the argument
+and keeps its constant. `CHAT_PROVIDERS` gains `CUSTOM`. `ResolvedChatModel` gains `base_url`,
+read from the credential row; `resolve_chat_model` and `set_chat_model` need no other change —
+the credential lookup they already do returns the whole row. The chat router passes
+`resolved.base_url` through and otherwise doesn't know `CUSTOM` exists. `validate_chat_model`
+takes the same optional `base_url` so the one-token proof runs against the workspace's own server.
+
+**UI.** The credential form on `/settings/keys` grows a "Custom (OpenAI-compatible)" provider
+option and, when it's selected, a Base URL input beneath the key input. The custom row in the
+keys list shows its endpoint instead of Phase 10's "Not registered" copy. The chat-model provider
+dropdown lists "Custom" once a custom credential exists — same rule as OpenAI/Gemini/Nebius, no
+platform fallback.
+
+**Tests.** `set_credential` for `CUSTOM` (missing `base_url` rejected, `base_url` on another
+provider rejected, unreachable endpoint rejected, reachable-but-401 accepted); `build_chat_provider`
+routing `CUSTOM` to the adapter with the given base URL and refusing it without one; `resolve_chat_model`
+carrying `base_url` through for a custom-configured tenant; the chat-model endpoint switching to
+`custom` and validating against a fake server at that URL; the chat router streaming through a
+custom endpoint end to end.
+
+## 23. Phase 12 — choosing a model from the provider's own list
+
+**Endpoint.** `GET /tenants/current/chat-model/available-models?provider=X` (admin/owner, the
+same role that can change the chat model). Resolves the workspace's key for `X` the way
+`set_chat_model` does — its own key, or the platform key for Anthropic only — and 422s with
+`ChatKeyRequired` when there is none. Calls that provider's `models.list()` on that key and
+returns `{"models": [ids…]}`, sorted, after the denylist filter. A provider that rejects the call
+or has no `/models` (a minimal custom server) returns 422 with the provider's own message; the UI
+treats that as "type it manually", never as a broken page.
+
+**Filtering.** `app/llm/models.py` holds one denylist of substrings per provider — OpenAI's
+`embedding`, `whisper`, `tts`, `dall-e`, `moderation`, `davinci`, `babbage`, `audio`, `realtime`,
+`transcribe`; Gemini's `embedding`, `aqa`, `imagen`, `veo`; Nebius's `embed`; Anthropic none
+(its list is already only Claude models); `CUSTOM` none — this app can't assume anything about a
+workspace's own server's naming. Substring matching on the id, lower-cased. Deliberately a
+denylist, not an allowlist: a provider's new chat model should appear without a code change here.
+
+**UI.** The chat-model section's Model field becomes a dropdown that loads from the endpoint when
+the provider selection changes, pre-selecting the current model when it's in the list. A
+"Type a model id instead" toggle swaps it for Phase 10's free-text input, and the free-text input
+is what the section falls back to — with the fetch error shown inline — whenever the list can't
+be loaded. Save behaves exactly as today: `PUT /tenants/current/chat-model` with whichever value
+is in the field.
+
+**Tests.** The denylist per provider against a fixed set of ids; the endpoint on a tenant with no
+key for the provider (422); on Anthropic with no own key (platform key, succeeds); against a fake
+`models.list()` (filtered, sorted); a provider whose list call fails (422 with its message);
+admin-only.
+
+## 24. Phases
+
+| Phase | Deliverable | Est. |
+|---|---|---|
+| 11 | `Provider.CUSTOM` with a per-credential `base_url`, reachability validation, the seam and settings wired through it, settings UI | 3 days |
+| 12 | Available-models endpoint per provider with a denylist filter, model dropdown with a manual-entry fallback in settings | 2 days |
+
+One branch and one pull request per phase, as before.

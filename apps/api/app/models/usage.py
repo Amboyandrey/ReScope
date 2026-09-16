@@ -21,6 +21,9 @@ class UsageKind(enum.StrEnum):
 
     PROFILE = "profile"
     DEEP_PROFILE = "deep_profile"
+    # A Browser Use Cloud deep-mode run (docs/PLAN.md §13) — counted against deep_runs_per_month
+    # exactly like DEEP_PROFILE, kept as its own kind only so usage views can tell them apart.
+    BROWSER_USE_RUN = "browser_use_run"
 
 
 class UsageBilledTo(enum.StrEnum):

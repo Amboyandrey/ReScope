@@ -18,7 +18,7 @@ from app.models.plan import Plan
 from app.models.platform_settings import SETTINGS_ROW_ID, PlatformSettings
 from app.models.role import Role, role_at_least
 from app.models.scrape import ProfileChange, ScrapeJob, ScrapeMode, ScrapePage, ScrapeStatus
-from app.models.tenant import Invitation, Membership, Tenant
+from app.models.tenant import Invitation, Membership, ScrapeProvider, Tenant
 from app.models.usage import UsageBilledTo, UsageEvent, UsageKind
 from app.models.user import User
 
@@ -51,6 +51,7 @@ __all__ = [
     "ScrapeJob",
     "ScrapeMode",
     "ScrapePage",
+    "ScrapeProvider",
     "ScrapeStatus",
     "SourceKind",
     "Tag",

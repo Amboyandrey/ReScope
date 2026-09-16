@@ -8,9 +8,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.core.errors import SlugReserved, SlugTaken, TenantNotFound
+from app.core.errors import BrowserUseKeyRequired, SlugReserved, SlugTaken, TenantNotFound
 from app.core.slugify import RESERVED_SLUGS, slugify
-from app.models import Membership, Role, Tenant, User
+from app.models import Membership, Role, ScrapeProvider, Tenant, User
+from app.services.llm import resolve_browser_use_key
 
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -72,3 +73,16 @@ async def get_tenant_and_role_by_slug(db: AsyncSession, *, slug: str, user: User
         raise TenantNotFound()
     tenant, role = row
     return tenant, role
+
+
+async def set_scrape_provider(db: AsyncSession, *, tenant: Tenant, provider: ScrapeProvider) -> Tenant:
+    """Switch which Tier 2 provider this tenant's deep-mode jobs use (docs/PLAN.md §13). Refuses
+    to switch to Browser Use Cloud without a usable key — a tenant's own, or the platform's —
+    since otherwise a deep-mode job would just silently run as if it were fast mode instead."""
+    if provider == ScrapeProvider.BROWSER_USE_CLOUD:
+        resolved = await resolve_browser_use_key(db, tenant_id=tenant.id)
+        if resolved is None:
+            raise BrowserUseKeyRequired()
+    tenant.settings = {**tenant.settings, "scrape_provider": provider.value}
+    await db.flush()
+    return tenant

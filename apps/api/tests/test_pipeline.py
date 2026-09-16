@@ -29,11 +29,14 @@ from app.models import (
     ScrapePage,
     ScrapeStatus,
     SourceKind,
+    Tenant,
+    UsageBilledTo,
     UsageEvent,
     UsageKind,
 )
 from app.models.embedding import EMBEDDING_DIMENSIONS
 from app.scraping import pipeline
+from app.scraping.browser_use_cloud import BrowserUseResult
 from app.scraping.extraction import (
     ExtractedCompetency,
     ExtractedEvidence,
@@ -43,6 +46,7 @@ from app.scraping.extraction import (
     ExtractionResult,
 )
 from app.scraping.render import RenderedPage
+from app.services.llm import ResolvedKey
 from tests.helpers import create_tenant, tenant_headers
 
 
@@ -443,3 +447,96 @@ async def test_deep_mode_runs_tier_2_and_records_a_separate_usage_event(
     assert len(pages) == 1
     assert pages[0].screenshot_key is not None
     assert (tmp_path / pages[0].screenshot_key).read_bytes() == b"fake-png-bytes"
+
+
+async def test_deep_mode_dispatches_to_browser_use_cloud_and_merges_profiles(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A tenant on the `browser_use_cloud` provider skips the custom agent entirely, merges its
+    own separately-extracted profile with Tier 1's, records a BROWSER_USE_RUN usage event (not
+    DEEP_PROFILE), and keeps the cloud task's screenshots as evidence without feeding them back
+    into `extract_profile`."""
+    from app.core import storage as storage_module
+
+    monkeypatch.setattr(storage_module.settings, "storage_dir", str(tmp_path))
+    company, job = await _create_company(client, db, mode="deep")
+
+    await set_tenant_scope(db, company.tenant_id)
+    tenant = await db.get(Tenant, company.tenant_id)
+    assert tenant is not None
+    tenant.settings = {**tenant.settings, "scrape_provider": "browser_use_cloud"}
+    await db.commit()
+    await set_tenant_scope(db, company.tenant_id)
+
+    tier1_result = ExtractionResult(
+        profile=ExtractedProfile(
+            overview="Acme makes widgets.",
+            offerings=[
+                ExtractedOffering(
+                    kind="product",
+                    name="Widget",
+                    description="A sturdy widget.",
+                    category=None,
+                    evidence=[ExtractedEvidence(url="https://example.com", quote="widgets")],
+                )
+            ],
+            competencies=[],
+        ),
+        tokens_in=10,
+        tokens_out=5,
+    )
+    cloud_page = RenderedPage(
+        url="https://example.com/hidden",
+        final_url="https://example.com/hidden",
+        status_code=None,
+        markdown="",
+        content_hash="cloudhash",
+        screenshot=b"cloud-screenshot-bytes",
+    )
+    cloud_result = BrowserUseResult(
+        profile=ExtractedProfile(
+            overview="",
+            offerings=[
+                ExtractedOffering(
+                    kind="product",
+                    name="Gadget",
+                    description="Found only behind a tab.",
+                    category=None,
+                    evidence=[ExtractedEvidence(url="https://example.com/hidden", quote="gadgets")],
+                )
+            ],
+            competencies=[],
+        ),
+        pages=[cloud_page],
+        steps=4,
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=[]))
+        mp.setattr(pipeline, "extract_profile", AsyncMock(return_value=tier1_result))
+        mp.setattr(
+            pipeline,
+            "resolve_browser_use_key",
+            AsyncMock(return_value=ResolvedKey(api_key="bu-test-key", billed_to=UsageBilledTo.PLATFORM)),
+        )
+        mp.setattr(pipeline, "run_browser_use_task", AsyncMock(return_value=cloud_result))
+        await pipeline.run_scrape_job(db, job=job, company=company)
+        await db.commit()
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed_job = await db.get(ScrapeJob, job.id)
+    assert refreshed_job is not None
+    assert refreshed_job.tier_reached == 2
+
+    offerings = list((await db.scalars(select(Offering).where(Offering.company_id == company.id))).all())
+    assert {o.name for o in offerings} == {"Widget", "Gadget"}
+
+    events = list((await db.scalars(select(UsageEvent).where(UsageEvent.job_id == job.id))).all())
+    kinds = {e.kind for e in events}
+    assert UsageKind.BROWSER_USE_RUN in kinds
+    assert UsageKind.DEEP_PROFILE not in kinds
+
+    pages = list((await db.scalars(select(ScrapePage).where(ScrapePage.job_id == job.id))).all())
+    screenshot_pages = [p for p in pages if p.screenshot_key is not None]
+    assert len(screenshot_pages) == 1
+    assert (tmp_path / screenshot_pages[0].screenshot_key).read_bytes() == b"cloud-screenshot-bytes"

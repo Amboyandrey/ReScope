@@ -32,3 +32,21 @@ async def has_own_anthropic_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> bo
     way (see services/usage.py's `billed_to`), just not counted against the plan's ceiling."""
     credential = await get_active_credential(db, tenant_id=tenant_id, provider=Provider.ANTHROPIC)
     return credential is not None
+
+
+async def resolve_browser_use_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> ResolvedKey | None:
+    """The tenant's own Browser Use key if it has registered one, else the platform's — `None` if
+    neither exists, which is what greys out the `browser_use_cloud` provider option in settings
+    and is what `run_browser_use_task` treats as "this provider isn't usable right now"."""
+    credential = await get_active_credential(db, tenant_id=tenant_id, provider=Provider.BROWSER_USE)
+    if credential is not None:
+        return ResolvedKey(api_key=decrypt_credential_key(credential), billed_to=UsageBilledTo.TENANT)
+    platform_key = get_settings().browser_use_api_key
+    if not platform_key:
+        return None
+    return ResolvedKey(api_key=platform_key, billed_to=UsageBilledTo.PLATFORM)
+
+
+async def has_own_browser_use_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
+    credential = await get_active_credential(db, tenant_id=tenant_id, provider=Provider.BROWSER_USE)
+    return credential is not None

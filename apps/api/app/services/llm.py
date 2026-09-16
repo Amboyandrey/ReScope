@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import CredentialNotFound
+from app.core.errors import ChatKeyRequired, CredentialNotFound, CredentialValidationFailed
+from app.llm import CHAT_PROVIDERS
 from app.models import Provider, Tenant, UsageBilledTo
 from app.services.credentials import decrypt_credential_key, get_active_credential
 
@@ -68,6 +69,24 @@ async def resolve_chat_model(db: AsyncSession, *, tenant: Tenant) -> ResolvedCha
         billed_to=UsageBilledTo.TENANT,
         base_url=credential.base_url,
     )
+
+
+async def resolve_key_for_chat_provider(
+    db: AsyncSession, *, tenant: Tenant, provider: Provider
+) -> tuple[str, str | None]:
+    """The `(api_key, base_url)` a workspace would use to talk to `provider` for chat — its own
+    key for every provider but Anthropic, which falls back to the platform's; `base_url` is only
+    ever non-`None` for `Provider.CUSTOM`. Raises `ChatKeyRequired` when the workspace has no
+    usable key for `provider`. Shared by `set_chat_model` (saving a chat choice) and the
+    available-models endpoint (browsing a provider's models before committing to one)."""
+    if provider not in CHAT_PROVIDERS:
+        raise CredentialValidationFailed(f"{provider.value.title()} isn't a chat provider.")
+    if provider == Provider.ANTHROPIC:
+        return (await resolve_anthropic_key(db, tenant_id=tenant.id)).api_key, None
+    credential = await get_active_credential(db, tenant_id=tenant.id, provider=provider)
+    if credential is None:
+        raise ChatKeyRequired()
+    return decrypt_credential_key(credential), credential.base_url
 
 
 async def has_own_chat_key(db: AsyncSession, *, tenant: Tenant) -> bool:

@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import anthropic
 import httpx
 import openai
 import pytest
@@ -280,6 +281,133 @@ async def test_switching_chat_model_to_custom_succeeds_once_registered(
     body = response.json()
     assert body["chat_provider"] == "custom"
     assert body["chat_model"] == "my-model"
+
+
+class _FakeModelsPage:
+    """Stands in for the openai SDK's `AsyncPaginator` — awaitable (what credential validation
+    does with it) and async-iterable (what the available-models listing does), same object."""
+
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = ids
+
+    def __await__(self):  # noqa: ANN204
+        async def _self() -> "_FakeModelsPage":
+            return self
+
+        return _self().__await__()
+
+    async def __aiter__(self):  # noqa: ANN204
+        for model_id in self._ids:
+            yield SimpleNamespace(id=model_id)
+
+
+async def test_available_models_requires_a_key_for_the_provider(client: AsyncClient) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.get(
+        "/api/v1/tenants/current/chat-model/available-models?provider=openai", headers=headers
+    )
+    assert response.status_code == 422
+
+
+async def test_available_models_succeeds_for_anthropic_on_the_platform_key(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def gen():  # noqa: ANN202
+        for model_id in ["claude-sonnet-5", "claude-haiku-4-5"]:
+            yield SimpleNamespace(id=model_id)
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(models=SimpleNamespace(list=lambda: gen()))
+    )
+
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.get(
+        "/api/v1/tenants/current/chat-model/available-models?provider=anthropic", headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json()["models"] == ["claude-haiku-4-5", "claude-sonnet-5"]
+
+
+async def test_available_models_returns_a_filtered_sorted_list_for_openai(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = _FakeModelsPage(["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"])
+    monkeypatch.setattr(
+        openai,
+        "AsyncOpenAI",
+        lambda **_: SimpleNamespace(models=SimpleNamespace(list=lambda: page)),
+    )
+
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "openai", "api_key": "sk-openai-abc"},
+        headers=headers,
+    )
+
+    response = await client.get(
+        "/api/v1/tenants/current/chat-model/available-models?provider=openai", headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json()["models"] == ["gpt-4o", "gpt-4o-mini"]
+
+
+async def test_available_models_surfaces_a_providers_rejection(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_openai(monkeypatch)
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "openai", "api_key": "sk-openai-abc"},
+        headers=headers,
+    )
+
+    def raise_error(**_: object) -> object:
+        request = httpx.Request("GET", "https://api.openai.com/v1/models")
+        response = httpx.Response(401, request=request)
+        raise openai.APIStatusError("invalid key", response=response, body=None)
+
+    monkeypatch.setattr(
+        openai, "AsyncOpenAI", lambda **_: SimpleNamespace(models=SimpleNamespace(list=raise_error))
+    )
+
+    response = await client.get(
+        "/api/v1/tenants/current/chat-model/available-models?provider=openai", headers=headers
+    )
+    assert response.status_code == 422
+
+
+async def test_available_models_is_admin_only(client: AsyncClient) -> None:
+    await signup(client, email="owner@example.com")
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    invite = await client.post(
+        "/api/v1/tenants/current/invitations",
+        json={"email": "member@example.com", "role": "member"},
+        headers=headers,
+    )
+    token = invite.json()["token"]
+    client.cookies.clear()
+    await signup(client, email="member@example.com")
+    await client.post(f"/api/v1/invitations/{token}/accept", headers=csrf_headers(client))
+
+    response = await client.get(
+        "/api/v1/tenants/current/chat-model/available-models?provider=anthropic",
+        headers=tenant_headers(client, tenant["slug"]),
+    )
+    assert response.status_code == 403
 
 
 async def test_member_cannot_change_the_chat_model(client: AsyncClient) -> None:

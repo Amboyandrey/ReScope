@@ -8,19 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.core.errors import (
-    BrowserUseKeyRequired,
-    ChatKeyRequired,
-    CredentialValidationFailed,
-    SlugReserved,
-    SlugTaken,
-    TenantNotFound,
-)
+from app.core.errors import BrowserUseKeyRequired, SlugReserved, SlugTaken, TenantNotFound
 from app.core.slugify import RESERVED_SLUGS, slugify
-from app.llm import CHAT_PROVIDERS
+from app.llm import filter_chat_models, list_provider_models
 from app.models import Membership, Provider, Role, ScrapeProvider, Tenant, User
-from app.services.credentials import decrypt_credential_key, get_active_credential, validate_chat_model
-from app.services.llm import resolve_anthropic_key, resolve_browser_use_key
+from app.services.credentials import validate_chat_model
+from app.services.llm import resolve_browser_use_key, resolve_key_for_chat_provider
 
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -105,20 +98,18 @@ async def set_chat_model(db: AsyncSession, *, tenant: Tenant, provider: Provider
     tenant must register its own before picking one. Refuses a model that doesn't actually answer
     on that key too, so a typo'd model id fails here rather than on the next chat message.
     """
-    if provider not in CHAT_PROVIDERS:
-        raise CredentialValidationFailed(f"{provider.value.title()} isn't a chat provider.")
-
-    base_url = None
-    if provider == Provider.ANTHROPIC:
-        api_key = (await resolve_anthropic_key(db, tenant_id=tenant.id)).api_key
-    else:
-        credential = await get_active_credential(db, tenant_id=tenant.id, provider=provider)
-        if credential is None:
-            raise ChatKeyRequired()
-        api_key = decrypt_credential_key(credential)
-        base_url = credential.base_url
-
+    api_key, base_url = await resolve_key_for_chat_provider(db, tenant=tenant, provider=provider)
     await validate_chat_model(provider, api_key, model, base_url=base_url)
     tenant.settings = {**tenant.settings, "chat": {"provider": provider.value, "model": model}}
     await db.flush()
     return tenant
+
+
+async def list_available_chat_models(db: AsyncSession, *, tenant: Tenant, provider: Provider) -> list[str]:
+    """The chat-capable model ids the workspace's key for `provider` can actually see
+    (docs/PLAN.md §23) — an affordance for the settings UI's model picker, never a gate;
+    `set_chat_model`'s own `validate_chat_model` call remains the only thing that decides whether
+    a model id is actually accepted."""
+    api_key, base_url = await resolve_key_for_chat_provider(db, tenant=tenant, provider=provider)
+    model_ids = await list_provider_models(provider, api_key, base_url=base_url)
+    return filter_chat_models(provider, model_ids)

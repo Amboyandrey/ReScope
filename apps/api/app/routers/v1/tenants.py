@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, status
 from app.deps.auth import CurrentUser
 from app.deps.db import DbSession
 from app.deps.tenant import TenantContext, TenantCtx, require_role
-from app.models import Role
+from app.models import Provider, Role
 from app.schemas.tenant import (
+    AvailableModelsResponse,
     CreateTenantRequest,
     MyTenantResponse,
     SetChatModelRequest,
@@ -16,7 +17,13 @@ from app.schemas.tenant import (
     TenantResponse,
 )
 from app.services.audit import record_audit
-from app.services.tenants import create_tenant, list_my_tenants, set_chat_model, set_scrape_provider
+from app.services.tenants import (
+    create_tenant,
+    list_available_chat_models,
+    list_my_tenants,
+    set_chat_model,
+    set_scrape_provider,
+)
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -81,3 +88,11 @@ async def set_chat(body: SetChatModelRequest, ctx: _AdminCtx, db: DbSession) -> 
         metadata={"provider": body.provider.value, "model": body.model},
     )
     return TenantResponse.model_validate(tenant)
+
+
+@router.get("/current/chat-model/available-models", response_model=AvailableModelsResponse)
+async def available_models(provider: Provider, ctx: _AdminCtx, db: DbSession) -> AvailableModelsResponse:
+    """The chat-capable model ids the tenant's key for `provider` can see — an affordance for the
+    settings UI's model picker, not a gate on which model id can actually be saved."""
+    models = await list_available_chat_models(db, tenant=ctx.tenant, provider=provider)
+    return AvailableModelsResponse(models=models)

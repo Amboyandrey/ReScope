@@ -8,6 +8,7 @@ import {
   type Credential,
   type Provider,
   deleteCredential,
+  getAvailableModels,
   getCurrentTenantSettings,
   listCredentials,
   setChatModel,
@@ -44,6 +45,11 @@ export default function ApiKeysPage() {
   const [chatModelError, setChatModelError] = useState<string | null>(null);
   const [chatModelPending, setChatModelPending] = useState(false);
 
+  const [availableModels, setAvailableModels] = useState<string[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
+  const [manualModelEntry, setManualModelEntry] = useState(false);
+
   const refresh = async () => setCredentials(await listCredentials());
 
   useEffect(() => {
@@ -55,6 +61,35 @@ export default function ApiKeysPage() {
       setChatModelInput(t.chat_provider);
     });
   }, []);
+
+  useEffect(() => {
+    if (chatProvider === null) return;
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => {
+        if (cancelled) return;
+        setModelsLoading(true);
+        setModelsFetchError(null);
+      })
+      .then(() => getAvailableModels(chatModelInput))
+      .then((models) => {
+        if (cancelled) return;
+        setAvailableModels(models);
+        setManualModelEntry(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setAvailableModels(null);
+        setManualModelEntry(true);
+        setModelsFetchError(err instanceof AuthError ? err.message : "Could not load the model list.");
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatProvider, chatModelInput]);
 
   async function onScrapeProviderChange(next: ScrapeProvider) {
     setScrapeProviderError(null);
@@ -255,15 +290,51 @@ export default function ApiKeysPage() {
             </label>
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-xs font-medium uppercase text-zinc-500">Model</span>
-              <input
-                type="text"
-                className="rounded-md border border-zinc-300 px-3 py-2"
-                placeholder="e.g. claude-sonnet-5"
-                value={chatModel}
-                onChange={(e) => setChatModelState(e.target.value)}
-                required
-              />
+              {modelsLoading ? (
+                <div className="rounded-md border border-zinc-200 px-3 py-2 text-sm text-zinc-400">
+                  Loading models…
+                </div>
+              ) : manualModelEntry || availableModels === null ? (
+                <input
+                  type="text"
+                  className="rounded-md border border-zinc-300 px-3 py-2"
+                  placeholder="e.g. claude-sonnet-5"
+                  value={chatModel}
+                  onChange={(e) => setChatModelState(e.target.value)}
+                  required
+                />
+              ) : (
+                <select
+                  className="rounded-md border border-zinc-300 px-2 py-1.5"
+                  value={chatModel}
+                  onChange={(e) => setChatModelState(e.target.value)}
+                >
+                  <option value="" disabled>
+                    Choose a model…
+                  </option>
+                  {chatModel && !availableModels.includes(chatModel) && (
+                    <option value={chatModel}>{chatModel} (current)</option>
+                  )}
+                  {availableModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              )}
             </label>
+            {modelsFetchError && (
+              <div className="text-xs text-zinc-400">{modelsFetchError} — type a model id instead.</div>
+            )}
+            {!modelsLoading && availableModels !== null && (
+              <button
+                type="button"
+                className="self-start text-xs text-zinc-500 underline"
+                onClick={() => setManualModelEntry((v) => !v)}
+              >
+                {manualModelEntry ? "Choose from the list instead" : "Type a model id instead"}
+              </button>
+            )}
             <button
               type="submit"
               disabled={chatModelPending}

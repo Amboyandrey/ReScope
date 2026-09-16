@@ -24,6 +24,13 @@ class SetChatModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=200)
 
 
+class AvailableModelsResponse(BaseModel):
+    """Chat-capable model ids a workspace's key for a provider can see (docs/PLAN.md §23) — an
+    affordance for the settings UI's model picker, never a gate."""
+
+    models: list[str]
+
+
 class TenantResponse(BaseModel):
     id: uuid.UUID
     slug: str

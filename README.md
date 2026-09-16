@@ -16,13 +16,25 @@ implementation ended up diverging from the original plan in [`docs/PLAN.md`](doc
 
 - **AI profiling, tiered by how much a site needs.** A no-LLM discovery pass (robots.txt, sitemap,
   homepage links) feeds a text-extraction pass over rendered pages; a site whose content sits
-  behind tabs, accordions, or infinite scroll escalates to a custom visual browser agent that
-  clicks around like a person would, screenshotting evidence as it goes.
+  behind tabs, accordions, or infinite scroll escalates to a visual browser agent — a workspace's
+  own choice of the built-in custom agent or Browser Use Cloud — that clicks around like a person
+  would, screenshotting evidence as it goes.
 - **Evidence, not just claims.** Every extracted product, service, and competency links back to the
-  exact page and quote it came from.
-- **Semantic search and similar companies** — embed a query or a company's own summary and rank
-  every account in your tenant by cosine distance, powered by a self-hosted embedding model so
-  there's no per-search API cost.
+  exact page and quote it came from, with a mandatory description of what it is (or how the company
+  evidently has it) so search and chat rank on substance, not bare labels.
+- **A filterable catalogue** — country, company type, industry, competency kind, and tags, each
+  filter's option list built from what your own tenant's data actually contains.
+- **Semantic search, similar companies, and retrieval-grounded chat** — embed a query or a
+  company's own summary and rank every account in your tenant by cosine distance, powered by a
+  self-hosted embedding model so there's no per-search API cost. Chat answers only from what
+  retrieval actually found, citing the company and row behind every claim.
+- **Bring your own model, for scraping and independently for chat.** A workspace can register its
+  own Anthropic key (funds extraction and the visual agent) and Browser Use key (an alternate deep-
+  mode provider), exempting it from the platform's plan quotas. Chat is separately configurable to
+  any of Anthropic, OpenAI, Gemini, Nebius, or a workspace's own OpenAI-compatible server — with a
+  model list fetched live from whichever provider it picks, model choices validated with a real
+  call before they're saved, and everything falling back to the platform's own Anthropic key and
+  model until a workspace registers something of its own.
 - **Scheduled re-profiling** — a company gets re-scraped on a plan-dependent interval, and a diff
   against its previous profile lands in a changes feed.
 - **A light CRM on top** — contacts (with CSV import), notes, tags, and personal saved searches.
@@ -31,9 +43,10 @@ implementation ended up diverging from the original plan in [`docs/PLAN.md`](doc
 - **Subdomain-per-tenant, isolated three ways** — the tenant is resolved from the `Host` header
   (never the URL path or request body), every cross-tenant reference is impossible at the database
   level via composite foreign keys, and Postgres row-level security backstops both.
-- **Platform-paid LLM, quota'd per plan** — one Anthropic key funds every tenant's scraping; each
-  plan gets its own monthly profile and deep-run ceilings, enforced before a job is ever enqueued,
-  with a platform-wide killswitch for the operator.
+- **Platform-paid by default, quota'd per plan** — the platform's own Anthropic key funds a
+  workspace's scraping and chat until it registers its own; each plan gets its own monthly profile,
+  deep-run, and chat-message ceilings, enforced before a job or a chat message ever gets to run,
+  with a platform-wide scraping killswitch for the operator.
 
 ## Architecture
 
@@ -54,7 +67,9 @@ flowchart LR
     Worker --> PG
     Scraper --> PG
     Scraper -->|"structured extraction · visual agent"| LLM["Anthropic<br/>claude-sonnet-5 · claude-opus-5"]
+    Scraper -->|"deep mode, alternate provider"| BUC["Browser Use Cloud"]
     Scraper -->|"embed profile text"| TEI["text-embeddings-inference<br/>(Qwen3-Embedding-0.6B)"]
+    API -->|"chat: platform key, or a workspace's own"| ChatLLM["Anthropic · OpenAI · Gemini · Nebius<br/>or a workspace's own OpenAI-compatible server"]
 
     PG -.->|"row-level security backstop"| API
 ```
@@ -94,23 +109,30 @@ Sign in at `demo.rescope.localhost:3000` with `demo@rescope.app` / `demo-passwor
 your own email/password as arguments to the script). Re-running it is safe — it's a no-op once the
 tenant exists.
 
+Chat has its own way around the same problem: a workspace can register any of an OpenAI, Gemini, or
+Nebius key — or point it at any OpenAI-compatible server it runs itself — from `/settings/keys`,
+independent of whether a platform Anthropic key is configured at all.
+
 ## Repository layout
 
 ```
 apps/api/          FastAPI backend (Python 3.12)
-  app/core/           settings, db/redis engines, security, SSRF guard, cookies, middleware
+  app/core/           settings, db/redis engines, security, SSRF guard, crypto, cookies, middleware
   app/models/         SQLAlchemy ORM models
   app/schemas/        Pydantic request/response shapes
   app/services/       business logic — no FastAPI imports, fully unit-testable
   app/routers/v1/     HTTP surface — thin, delegates to services
-  app/scraping/       the three-tier profiling pipeline (discovery, render, extraction, visual agent)
+  app/scraping/       the three-tier profiling pipeline (discovery, render, extraction, visual agent,
+                      Browser Use Cloud as an alternate Tier 2 provider)
+  app/llm/            the chat provider seam — one protocol, an Anthropic adapter, and one
+                      OpenAI-compatible adapter covering OpenAI/Gemini/Nebius/a workspace's own server
   app/workers/        arq background jobs — the scraper, and the light worker's re-profile cron
   app/deps/           the auth → tenant → role dependency chain
   app/scripts/        one-off scripts (superadmin promotion, demo seed)
   migrations/         Alembic, one revision per schema change
-  tests/              pytest, 116 tests, against a real Postgres/Redis
+  tests/              pytest, 232 tests, against a real Postgres/Redis
 apps/web/           Next.js 16 (App Router), React 19, Tailwind 4
-  app/                routes — auth, tenant switcher, per-tenant company pages, admin
+  app/                routes — auth, tenant switcher, per-tenant company/catalogue/chat pages, admin
   lib/                one typed API client per domain
   components/         shared UI
 infra/              docker-compose.yml (dev), docker-compose.prod.yml + Caddyfile (production)
@@ -160,7 +182,7 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 
 Point `DOMAIN` and `*.DOMAIN`'s DNS records at the host. Caddy (`Dockerfile.caddy`, `Caddyfile`)
 terminates a wildcard TLS certificate via the ACME DNS-01 challenge and routes `api.<domain>` to
-the API container, everything else to the web container — see `docs/ARCHITECTURE.md` §9 for why
+the API container, everything else to the web container — see `docs/ARCHITECTURE.md` §13 for why
 that split needs to be explicit in production when dev gets it for free from two different ports.
 The example config targets Cloudflare for the DNS challenge; swap `Dockerfile.caddy`'s `xcaddy`
 line and the `Caddyfile`'s `dns` directive together to use a different provider.
@@ -182,11 +204,13 @@ line and the `Caddyfile`'s `dns` directive together to use a different provider.
 ## Status
 
 Feature-complete for what it set out to be: subdomain-per-tenant multi-tenancy with RLS, the
-three-tier scraping pipeline with evidence-linked extraction, semantic search and similar
-companies, usage metering and plan quotas with a superadmin killswitch, a light CRM, scheduled
+three-tier scraping pipeline with evidence-linked extraction and a choice of Tier 2 provider,
+a filterable catalogue, semantic search and similar companies, retrieval-grounded chat with
+citations, bring-your-own keys for both scraping and chat — any of four named chat providers or a
+workspace's own OpenAI-compatible server, with models fetched live and validated before they're
+saved — usage metering and plan quotas with a superadmin killswitch, a light CRM, scheduled
 re-profiling with a changes feed, and a production deployment path behind a wildcard-TLS reverse
 proxy.
 
-What's deliberately absent — hybrid (`tsvector` + vector) search, an HNSW index, deals/pipeline
-CRM stages, and per-tenant LLM keys — is listed with the reasoning in `docs/ARCHITECTURE.md` §5,
-§6, and §8.
+What's deliberately absent — hybrid (`tsvector` + vector) search, an HNSW index, and deals/pipeline
+CRM stages — is listed with the reasoning in `docs/ARCHITECTURE.md` §6 and §8.

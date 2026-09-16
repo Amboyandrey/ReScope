@@ -232,6 +232,56 @@ async def test_switching_chat_model_rejects_a_model_the_key_cant_actually_use(
     assert response.status_code == 422
 
 
+async def test_switching_chat_model_to_custom_requires_a_registered_endpoint(client: AsyncClient) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "custom", "model": "my-model"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_switching_chat_model_to_custom_succeeds_once_registered(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_openai(monkeypatch)  # backs the model-validation call, made via the openai SDK
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    # Registering the credential itself uses a raw httpx reachability probe, not the openai SDK.
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "custom", "api_key": "key", "base_url": "https://my-server.example.com/v1"},
+        headers=headers,
+    )
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "custom", "model": "my-model"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chat_provider"] == "custom"
+    assert body["chat_model"] == "my-model"
+
+
 async def test_member_cannot_change_the_chat_model(client: AsyncClient) -> None:
     await signup(client, email="owner@example.com")
     tenant = (await create_tenant(client)).json()

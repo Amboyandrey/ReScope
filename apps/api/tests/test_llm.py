@@ -6,6 +6,7 @@ messages actually run on.
 import uuid
 from types import SimpleNamespace
 
+import httpx
 import openai
 import pytest
 from httpx import AsyncClient
@@ -94,6 +95,17 @@ def test_factory_dispatches_openai_compatible_providers_with_the_right_base_url(
     assert OPENAI_COMPATIBLE_BASE_URLS[provider]  # every one of these providers has a base URL
 
 
+def test_factory_requires_a_base_url_for_the_custom_provider() -> None:
+    with pytest.raises(ValueError, match="base_url"):
+        build_chat_provider(Provider.CUSTOM, "key")
+
+
+def test_factory_dispatches_custom_to_the_workspaces_own_base_url() -> None:
+    chat = build_chat_provider(Provider.CUSTOM, "key", base_url="https://my-server.example.com/v1")
+    assert isinstance(chat, OpenAICompatibleChat)
+    assert str(chat._client.base_url).startswith("https://my-server.example.com/v1")  # noqa: SLF001
+
+
 async def test_resolve_chat_model_defaults_to_the_platforms_anthropic_key(
     client: AsyncClient, db: AsyncSession
 ) -> None:
@@ -144,6 +156,47 @@ async def test_resolve_chat_model_uses_the_tenants_own_key_for_a_configured_prov
     assert resolved.api_key == "sk-openai-abc"
     assert resolved.billed_to == UsageBilledTo.TENANT
     assert await has_own_chat_key(db, tenant=tenant)
+
+
+async def test_resolve_chat_model_carries_the_base_url_for_a_custom_provider(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    await set_tenant_scope(db, tenant_id)
+    await set_credential(
+        db,
+        tenant_id=tenant_id,
+        created_by=await _user_id(db),
+        provider=Provider.CUSTOM,
+        api_key="sk-custom-abc",
+        base_url="https://my-server.example.com/v1",
+    )
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+    tenant.settings = {**tenant.settings, "chat": {"provider": "custom", "model": "my-model"}}
+    await db.commit()
+    await set_tenant_scope(db, tenant_id)
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+
+    resolved = await resolve_chat_model(db, tenant=tenant)
+    assert resolved.provider == Provider.CUSTOM
+    assert resolved.api_key == "sk-custom-abc"
+    assert resolved.base_url == "https://my-server.example.com/v1"
+    assert resolved.billed_to == UsageBilledTo.TENANT
 
 
 async def test_resolve_chat_model_raises_when_the_configured_provider_has_no_key(

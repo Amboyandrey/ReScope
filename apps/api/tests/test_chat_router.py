@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import anthropic
+import httpx
 import openai
 import pytest
 from httpx import AsyncClient
@@ -242,6 +243,56 @@ async def test_send_message_streams_through_a_non_anthropic_provider_and_bills_t
     chat_events = [e for e in events if e.kind == UsageKind.CHAT]
     assert len(chat_events) == 1
     assert chat_events[0].model == "gpt-4o-mini"
+    assert chat_events[0].billed_to == UsageBilledTo.TENANT
+    assert float(chat_events[0].cost_usd) == 0.0
+
+
+async def test_send_message_streams_through_a_custom_endpoint_and_bills_the_tenant(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers, tenant_id = await _setup(client, db)
+    monkeypatch.setattr(chat_module, "embed_text", AsyncMock(return_value=_vector(0)))
+    _install_fake_openai_chat(monkeypatch, ["Acme makes widgets. ", "See [Acme]."])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+
+    def fake_httpx_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    # Credential registration validates by raw httpx reachability, not the openai SDK.
+    monkeypatch.setattr(httpx, "AsyncClient", fake_httpx_client)
+
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "custom", "api_key": "key", "base_url": "https://my-server.example.com/v1"},
+        headers=headers,
+    )
+    await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "custom", "model": "my-model"},
+        headers=headers,
+    )
+
+    created = await client.post("/api/v1/tenants/current/conversations", json={}, headers=headers)
+    conversation_id = created.json()["id"]
+
+    response = await client.post(
+        f"/api/v1/tenants/current/conversations/{conversation_id}/messages",
+        json={"content": "What does Acme make?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert "Acme makes widgets." in response.text
+
+    await set_tenant_scope(db, tenant_id)
+    events = list((await db.scalars(select(UsageEvent).where(UsageEvent.tenant_id == tenant_id))).all())
+    chat_events = [e for e in events if e.kind == UsageKind.CHAT]
+    assert len(chat_events) == 1
+    assert chat_events[0].model == "my-model"
     assert chat_events[0].billed_to == UsageBilledTo.TENANT
     assert float(chat_events[0].cost_usd) == 0.0
 

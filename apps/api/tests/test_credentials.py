@@ -78,6 +78,35 @@ def _mock_openai_compatible_chat_create(monkeypatch: pytest.MonkeyPatch, *, ok: 
     )
 
 
+def _mock_http_status(monkeypatch: pytest.MonkeyPatch, status_code: int) -> None:
+    """Any real HTTP response, regardless of status — what `_validate_custom_endpoint` treats as
+    "a server answered there"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={})
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+
+def _mock_http_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+
+
 def _mock_browser_use(monkeypatch: pytest.MonkeyPatch, status_code: int) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status_code, json={})
@@ -186,6 +215,79 @@ async def test_set_credential_validates_openai_compatible_providers(
         db, tenant_id=tenant_id, created_by=await _user_id(db), provider=provider, api_key="good-key"
     )
     assert credential.provider == provider
+
+
+async def test_set_credential_requires_a_base_url_for_the_custom_provider(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    with pytest.raises(CredentialValidationFailed):
+        await set_credential(
+            db, tenant_id=tenant_id, created_by=await _user_id(db), provider=Provider.CUSTOM, api_key="key"
+        )
+
+
+async def test_set_credential_rejects_an_unreachable_custom_endpoint(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    _mock_http_unreachable(monkeypatch)
+    with pytest.raises(CredentialValidationFailed):
+        await set_credential(
+            db,
+            tenant_id=tenant_id,
+            created_by=await _user_id(db),
+            provider=Provider.CUSTOM,
+            api_key="key",
+            base_url="https://unreachable.example.com/v1",
+        )
+
+
+async def test_set_credential_accepts_a_reachable_custom_endpoint_even_if_it_401s(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    _mock_http_status(monkeypatch, 401)
+    credential = await set_credential(
+        db,
+        tenant_id=tenant_id,
+        created_by=await _user_id(db),
+        provider=Provider.CUSTOM,
+        api_key="key",
+        base_url="https://my-server.example.com/v1",
+    )
+    assert credential.provider == Provider.CUSTOM
+    assert credential.base_url == "https://my-server.example.com/v1"
+
+
+async def test_validate_chat_model_for_custom_provider_uses_the_given_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["base_url"] = base_url
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        async def _create(self, **_: object) -> object:
+            return SimpleNamespace()
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", _FakeOpenAI)
+    await validate_chat_model(Provider.CUSTOM, "key", "my-model", base_url="https://my-server.example.com/v1")
+    assert captured["base_url"] == "https://my-server.example.com/v1"
 
 
 async def test_validate_chat_model_surfaces_anthropics_own_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,3 +494,46 @@ async def test_credentials_router_set_list_delete(
     deleted = await client.delete("/api/v1/tenants/current/credentials/anthropic", headers=headers)
     assert deleted.status_code == 204
     assert (await client.get("/api/v1/tenants/current/credentials", headers=headers)).json() == []
+
+
+async def test_credentials_router_rejects_a_base_url_on_a_non_custom_provider(client: AsyncClient) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "anthropic", "api_key": "sk-ant-abc123", "base_url": "https://example.com/v1"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_credentials_router_requires_a_base_url_for_custom(client: AsyncClient) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "custom", "api_key": "key"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_credentials_router_sets_a_custom_provider_with_its_base_url(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_http_status(monkeypatch, 200)
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "custom", "api_key": "key", "base_url": "https://my-server.example.com/v1"},
+        headers=headers,
+    )
+    assert response.status_code == 201
+    assert response.json()["base_url"] == "https://my-server.example.com/v1"

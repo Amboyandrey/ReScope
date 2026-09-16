@@ -33,6 +33,7 @@ async def set_one(body: SetCredentialRequest, ctx: _AdminCtx, db: DbSession) -> 
         created_by=ctx.user.id,
         provider=body.provider,
         api_key=body.api_key,
+        base_url=body.base_url,
     )
     await record_audit(
         db,

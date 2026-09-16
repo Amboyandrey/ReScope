@@ -3,12 +3,13 @@ import { API_URL, ROOT_DOMAIN } from "./config";
 import { tenantSlugFromHost } from "./tenant";
 import type { ChatProvider, ScrapeProvider } from "./tenant-client";
 
-export type Provider = "anthropic" | "browser_use" | "openai" | "gemini" | "nebius";
+export type Provider = "anthropic" | "browser_use" | "openai" | "gemini" | "nebius" | "custom";
 export type { ChatProvider };
 
 export type Credential = {
   id: string;
   provider: Provider;
+  base_url: string | null;
   last4: string;
   validated_at: string;
   created_at: string;
@@ -47,10 +48,14 @@ export async function listCredentials(): Promise<Credential[]> {
   return (await res.json()) as Credential[];
 }
 
-export async function setCredential(provider: Provider, apiKey: string): Promise<Credential> {
+export async function setCredential(
+  provider: Provider,
+  apiKey: string,
+  baseUrl?: string,
+): Promise<Credential> {
   const res = await tenantFetch("/api/v1/tenants/current/credentials", {
     method: "PUT",
-    body: JSON.stringify({ provider, api_key: apiKey }),
+    body: JSON.stringify({ provider, api_key: apiKey, base_url: baseUrl ?? null }),
   });
   await throwIfNotOk(res);
   return (await res.json()) as Credential;

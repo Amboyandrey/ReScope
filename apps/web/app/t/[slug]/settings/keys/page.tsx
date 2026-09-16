@@ -22,14 +22,16 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI",
   gemini: "Gemini",
   nebius: "Nebius",
+  custom: "Custom (OpenAI-compatible)",
 };
 
-const CHAT_PROVIDERS: ChatProvider[] = ["anthropic", "openai", "gemini", "nebius"];
+const CHAT_PROVIDERS: ChatProvider[] = ["anthropic", "openai", "gemini", "nebius", "custom"];
 
 export default function ApiKeysPage() {
   const [credentials, setCredentials] = useState<Credential[] | null>(null);
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -83,8 +85,9 @@ export default function ApiKeysPage() {
     setError(null);
     setPending(true);
     try {
-      await setCredential(provider, apiKey);
+      await setCredential(provider, apiKey, provider === "custom" ? baseUrl : undefined);
       setApiKey("");
+      setBaseUrl("");
       await refresh();
     } catch (err) {
       setError(err instanceof AuthError ? err.message : "Could not save this key.");
@@ -99,14 +102,15 @@ export default function ApiKeysPage() {
     <main className="mx-auto max-w-2xl px-6 py-10">
       <h1 className="text-2xl font-semibold">API keys</h1>
       <p className="mt-1 text-zinc-600">
-        Register your own Anthropic, Browser Use, OpenAI, Gemini, or Nebius key to run scraping,
-        profiling, or chat on your own account instead of the platform&apos;s — a workspace with its
-        own key isn&apos;t limited by its plan&apos;s monthly quota.
+        Register your own Anthropic, Browser Use, OpenAI, Gemini, or Nebius key — or point chat at
+        your own OpenAI-compatible server — to run scraping, profiling, or chat on your own account
+        instead of the platform&apos;s. A workspace with its own key isn&apos;t limited by its
+        plan&apos;s monthly quota.
       </p>
 
       {credentials !== null && (
         <ul className="mt-6 flex flex-col gap-2">
-          {(["anthropic", "browser_use", "openai", "gemini", "nebius"] as Provider[]).map((p) => {
+          {(["anthropic", "browser_use", "openai", "gemini", "nebius", "custom"] as Provider[]).map((p) => {
             const credential = registered.get(p);
             const hasPlatformFallback = p === "anthropic" || p === "browser_use";
             return (
@@ -118,7 +122,8 @@ export default function ApiKeysPage() {
                   <div className="font-medium">{PROVIDER_LABELS[p]}</div>
                   {credential ? (
                     <div className="text-sm text-zinc-500">
-                      Ending in {credential.last4} · validated{" "}
+                      Ending in {credential.last4}
+                      {credential.base_url && <> · {credential.base_url}</>} · validated{" "}
                       {new Date(credential.validated_at).toLocaleDateString()}
                     </div>
                   ) : (
@@ -157,8 +162,19 @@ export default function ApiKeysPage() {
             <option value="openai">OpenAI</option>
             <option value="gemini">Gemini</option>
             <option value="nebius">Nebius</option>
+            <option value="custom">Custom (OpenAI-compatible)</option>
           </select>
         </label>
+        {provider === "custom" && (
+          <input
+            type="text"
+            className="rounded-md border border-zinc-300 px-3 py-2"
+            placeholder="Base URL, e.g. https://my-server.example.com/v1"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            required
+          />
+        )}
         <input
           type="password"
           className="rounded-md border border-zinc-300 px-3 py-2"

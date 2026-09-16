@@ -2,7 +2,7 @@ import { apiFetch, AuthError } from "./auth-client";
 import type { Role } from "./types";
 
 export type ScrapeProvider = "custom" | "browser_use_cloud";
-export type ChatProvider = "anthropic" | "openai" | "gemini" | "nebius";
+export type ChatProvider = "anthropic" | "openai" | "gemini" | "nebius" | "custom";
 
 export type Tenant = {
   id: string;

@@ -17,3 +17,4 @@ class Plan(Base):
     max_companies: Mapped[int]
     max_members: Mapped[int]
     reprofile_interval_days: Mapped[int]
+    chat_messages_per_month: Mapped[int]

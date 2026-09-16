@@ -14,6 +14,7 @@ from app.routers.v1 import (
     audit,
     auth,
     catalogue,
+    chat,
     companies,
     contacts,
     credentials,
@@ -55,6 +56,7 @@ app.include_router(members.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
 app.include_router(catalogue.router, prefix="/api/v1")
 app.include_router(credentials.router, prefix="/api/v1")
+app.include_router(chat.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(notes.router, prefix="/api/v1")
 app.include_router(imports.router, prefix="/api/v1")

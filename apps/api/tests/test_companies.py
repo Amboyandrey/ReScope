@@ -146,3 +146,59 @@ async def test_scrape_jobs_404_for_a_company_in_another_tenant(client: AsyncClie
         f"/api/v1/tenants/current/companies/{company_id}/scrape-jobs", headers=headers_b
     )
     assert response.status_code == 404
+
+
+async def test_reprofile_queues_a_second_scrape_job(client: AsyncClient) -> None:
+    headers = await _setup_tenant(client)
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers
+    )
+    company_id = created.json()["id"]
+
+    response = await client.post(f"/api/v1/tenants/current/companies/{company_id}/reprofile", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["profile_status"] == "scraping"
+
+    jobs = await client.get(f"/api/v1/tenants/current/companies/{company_id}/scrape-jobs", headers=headers)
+    assert len(jobs.json()) == 2
+
+
+async def test_viewer_cannot_reprofile(client: AsyncClient) -> None:
+    await signup(client, email="owner@example.com")
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers
+    )
+    company_id = created.json()["id"]
+
+    invite = await client.post(
+        "/api/v1/tenants/current/invitations",
+        json={"email": "viewer@example.com", "role": "viewer"},
+        headers=headers,
+    )
+    token = invite.json()["token"]
+    client.cookies.clear()
+    await signup(client, email="viewer@example.com")
+    await client.post(f"/api/v1/invitations/{token}/accept", headers=csrf_headers(client))
+
+    response = await client.post(
+        f"/api/v1/tenants/current/companies/{company_id}/reprofile",
+        headers=tenant_headers(client, tenant["slug"]),
+    )
+    assert response.status_code == 403
+
+
+async def test_reprofile_404s_for_a_company_in_another_tenant(client: AsyncClient) -> None:
+    headers_a = await _setup_tenant(client, email="owner-a@example.com", tenant_name="Tenant A")
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers_a
+    )
+    company_id = created.json()["id"]
+    client.cookies.clear()
+
+    headers_b = await _setup_tenant(client, email="owner-b@example.com", tenant_name="Tenant B")
+    response = await client.post(
+        f"/api/v1/tenants/current/companies/{company_id}/reprofile", headers=headers_b
+    )
+    assert response.status_code == 404

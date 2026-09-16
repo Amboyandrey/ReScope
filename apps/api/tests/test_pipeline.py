@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import set_tenant_scope
 from app.models import (
     Company,
+    CompanyType,
     Competency,
     Embedding,
     Offering,
@@ -36,6 +37,7 @@ from app.scraping import pipeline
 from app.scraping.extraction import (
     ExtractedCompetency,
     ExtractedEvidence,
+    ExtractedFacts,
     ExtractedOffering,
     ExtractedProfile,
     ExtractionResult,
@@ -97,7 +99,7 @@ async def test_successful_run_writes_profile_and_marks_done(client: AsyncClient,
                 ExtractedOffering(
                     kind="product",
                     name="Widget",
-                    description=None,
+                    description="A sturdy example widget.",
                     category=None,
                     evidence=[ExtractedEvidence(url="https://example.com", quote="We make widgets")],
                 )
@@ -106,7 +108,7 @@ async def test_successful_run_writes_profile_and_marks_done(client: AsyncClient,
                 ExtractedCompetency(
                     kind="technology",
                     name="Widget-forging",
-                    description=None,
+                    description="A proprietary forging process, described on the products page.",
                     evidence=[ExtractedEvidence(url="https://example.com", quote="forged with care")],
                 )
             ],
@@ -150,7 +152,7 @@ async def test_successful_run_writes_profile_and_marks_done(client: AsyncClient,
     assert set(by_kind) == {SourceKind.COMPANY_SUMMARY, SourceKind.OFFERING, SourceKind.COMPETENCY}
     assert by_kind[SourceKind.COMPANY_SUMMARY].source_id == company.id
     assert by_kind[SourceKind.OFFERING].source_id == offerings[0].id
-    assert by_kind[SourceKind.OFFERING].content == "Widget"
+    assert by_kind[SourceKind.OFFERING].content == "Widget: A sturdy example widget."
     assert by_kind[SourceKind.COMPETENCY].source_id == competencies[0].id
     assert len(by_kind[SourceKind.COMPANY_SUMMARY].embedding) == EMBEDDING_DIMENSIONS
 
@@ -161,6 +163,139 @@ async def test_successful_run_writes_profile_and_marks_done(client: AsyncClient,
     assert refreshed_job.pages_fetched == 1
     assert refreshed_job.tokens_in == 1000
     assert float(refreshed_job.cost_usd) > 0
+
+
+def test_clean_country_code_accepts_only_two_letter_codes() -> None:
+    assert pipeline._clean_country_code("de") == "DE"
+    assert pipeline._clean_country_code("US") == "US"
+    assert pipeline._clean_country_code("Germany") is None
+    assert pipeline._clean_country_code(None) is None
+    assert pipeline._clean_country_code("12") is None
+
+
+def test_apply_facts_writes_and_truncates_company_columns() -> None:
+    company = Company(
+        tenant_id=uuid.uuid4(),
+        domain="acme.example",
+        name="Acme",
+        website_url="https://acme.example",
+        created_by=uuid.uuid4(),
+    )
+    facts = ExtractedFacts(
+        hq_country="Germany",  # rejected — not a 2-letter code, so this stays None
+        hq_city="x" * 200,
+        industry="y" * 200,
+        company_type=CompanyType.MANUFACTURER,
+        employee_range="z" * 100,
+        founded_year=1990,
+        socials={"linkedin": "https://linkedin.com/company/acme"},
+    )
+    pipeline._apply_facts(company, facts)
+    assert company.hq_country is None
+    assert company.hq_city == "x" * 120
+    assert company.industry == "y" * 120
+    assert company.company_type == CompanyType.MANUFACTURER
+    assert company.employee_range == "z" * 32
+    assert company.founded_year == 1990
+    assert company.socials == {"linkedin": "https://linkedin.com/company/acme"}
+
+
+def test_company_summary_text_includes_facts_when_present() -> None:
+    company = Company(
+        tenant_id=uuid.uuid4(),
+        domain="acme.example",
+        name="Acme",
+        website_url="https://acme.example",
+        created_by=uuid.uuid4(),
+        overview="Acme makes example widgets.",
+        company_type=CompanyType.MANUFACTURER,
+        hq_city="Berlin",
+        hq_country="DE",
+        industry="Industrial equipment",
+    )
+    text = pipeline._company_summary_text(company)
+    assert text == ("Acme — manufacturer in Berlin, DE. Industrial equipment. Acme makes example widgets.")
+
+
+def test_company_summary_text_omits_missing_facts() -> None:
+    company = Company(
+        tenant_id=uuid.uuid4(),
+        domain="acme.example",
+        name="Acme",
+        website_url="https://acme.example",
+        created_by=uuid.uuid4(),
+        overview="Acme makes example widgets.",
+    )
+    assert pipeline._company_summary_text(company) == "Acme. Acme makes example widgets."
+
+
+def test_company_summary_text_is_none_without_an_overview() -> None:
+    company = Company(
+        tenant_id=uuid.uuid4(),
+        domain="acme.example",
+        name="Acme",
+        website_url="https://acme.example",
+        created_by=uuid.uuid4(),
+    )
+    assert pipeline._company_summary_text(company) is None
+
+
+async def test_facts_are_written_onto_the_company_row(client: AsyncClient, db: AsyncSession) -> None:
+    company, job = await _create_company(client, db)
+
+    fake_result = ExtractionResult(
+        profile=ExtractedProfile(
+            overview="Acme makes example widgets.",
+            facts=ExtractedFacts(
+                hq_country="de",
+                hq_city="Berlin",
+                industry="Industrial equipment",
+                company_type=CompanyType.MANUFACTURER,
+                employee_range="51-200",
+                founded_year=1990,
+                socials={"linkedin": "https://linkedin.com/company/acme"},
+            ),
+            offerings=[],
+            competencies=[],
+        ),
+        tokens_in=10,
+        tokens_out=5,
+    )
+    rendered = [
+        RenderedPage(
+            url="https://example.com",
+            final_url="https://example.com",
+            status_code=200,
+            markdown="# Acme",
+            content_hash="abc",
+        )
+    ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=["https://example.com"]))
+        mp.setattr(pipeline, "render_pages", AsyncMock(return_value=rendered))
+        mp.setattr(pipeline, "extract_profile", AsyncMock(return_value=fake_result))
+        await pipeline.run_scrape_job(db, job=job, company=company)
+        await db.commit()
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed = await db.get(Company, company.id)
+    assert refreshed is not None
+    assert refreshed.hq_country == "DE"
+    assert refreshed.hq_city == "Berlin"
+    assert refreshed.company_type == CompanyType.MANUFACTURER
+    assert refreshed.employee_range == "51-200"
+    assert refreshed.founded_year == 1990
+    assert refreshed.socials == {"linkedin": "https://linkedin.com/company/acme"}
+
+    embedding = await db.scalar(
+        select(Embedding).where(
+            Embedding.company_id == company.id, Embedding.source_kind == SourceKind.COMPANY_SUMMARY
+        )
+    )
+    assert embedding is not None
+    # `company.name` is still the domain — nothing in extraction overwrites it (only its facts).
+    assert embedding.content.startswith("example.com — manufacturer in Berlin, DE.")
 
 
 async def test_no_candidate_pages_completes_the_job_with_nothing_extracted(
@@ -217,7 +352,7 @@ async def test_embedding_failure_does_not_fail_the_job(client: AsyncClient, db: 
                 ExtractedOffering(
                     kind="product",
                     name="Widget",
-                    description=None,
+                    description="A sturdy example widget.",
                     category=None,
                     evidence=[ExtractedEvidence(url="https://example.com", quote="We make widgets")],
                 )

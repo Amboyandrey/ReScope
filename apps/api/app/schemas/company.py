@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.models.company import CompetencyKind, OfferingKind, ProfileStatus
+from app.models.company import CompanyType, CompetencyKind, OfferingKind, ProfileStatus
 from app.models.scrape import ScrapeMode
 
 
@@ -23,6 +23,7 @@ class CompanyResponse(BaseModel):
     name: str
     website_url: str
     industry: str | None
+    company_type: CompanyType | None
     hq_country: str | None
     hq_city: str | None
     employee_range: str | None
@@ -46,7 +47,7 @@ class OfferingResponse(BaseModel):
     id: uuid.UUID
     kind: OfferingKind
     name: str
-    description: str | None
+    description: str
     category: str | None
     url: str | None
     evidence: list[EvidenceItem]
@@ -58,7 +59,7 @@ class CompetencyResponse(BaseModel):
     id: uuid.UUID
     kind: CompetencyKind
     name: str
-    description: str | None
+    description: str
     evidence: list[EvidenceItem]
 
     model_config = {"from_attributes": True}

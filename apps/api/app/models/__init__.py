@@ -1,7 +1,15 @@
 """ORM models. Importing this package registers every table on `Base.metadata` for Alembic."""
 
 from app.models.audit_log import AuditLog
-from app.models.company import Company, Competency, CompetencyKind, Offering, OfferingKind, ProfileStatus
+from app.models.company import (
+    Company,
+    CompanyType,
+    Competency,
+    CompetencyKind,
+    Offering,
+    OfferingKind,
+    ProfileStatus,
+)
 from app.models.crm import CompanyTag, Contact, Note, SavedSearch, Tag
 from app.models.embedding import EMBEDDING_DIMENSIONS, Embedding, SourceKind
 from app.models.import_job import Import, ImportKind, ImportStatus
@@ -19,6 +27,7 @@ __all__ = [
     "AuditLog",
     "Company",
     "CompanyTag",
+    "CompanyType",
     "Competency",
     "CompetencyKind",
     "Contact",

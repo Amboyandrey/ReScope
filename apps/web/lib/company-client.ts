@@ -2,12 +2,23 @@ import { apiFetch, AuthError } from "./auth-client";
 import { ROOT_DOMAIN } from "./config";
 import { tenantSlugFromHost } from "./tenant";
 
+export type CompanyType =
+  | "manufacturer"
+  | "distributor"
+  | "service_provider"
+  | "software"
+  | "consultancy"
+  | "agency"
+  | "research"
+  | "other";
+
 export type Company = {
   id: string;
   domain: string;
   name: string;
   website_url: string;
   industry: string | null;
+  company_type: CompanyType | null;
   hq_country: string | null;
   hq_city: string | null;
   employee_range: string | null;
@@ -26,7 +37,7 @@ export type Offering = {
   id: string;
   kind: "product" | "service";
   name: string;
-  description: string | null;
+  description: string;
   category: string | null;
   url: string | null;
   evidence: Evidence[];
@@ -36,7 +47,7 @@ export type Competency = {
   id: string;
   kind: "capability" | "technology" | "certification" | "industry_served" | "partnership";
   name: string;
-  description: string | null;
+  description: string;
   evidence: Evidence[];
 };
 
@@ -99,6 +110,14 @@ export async function getCompany(companyId: string): Promise<CompanyDetail> {
 export async function deleteCompany(companyId: string): Promise<void> {
   const res = await tenantFetch(`/api/v1/tenants/current/companies/${companyId}`, { method: "DELETE" });
   await throwIfNotOk(res);
+}
+
+export async function reprofileCompany(companyId: string): Promise<Company> {
+  const res = await tenantFetch(`/api/v1/tenants/current/companies/${companyId}/reprofile`, {
+    method: "POST",
+  });
+  await throwIfNotOk(res);
+  return (await res.json()) as Company;
 }
 
 export async function listScrapeJobs(companyId: string): Promise<ScrapeJob[]> {

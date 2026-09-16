@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ROOT_URL } from "@/lib/config";
 import { resolveTenant } from "@/lib/server-tenant";
@@ -22,11 +23,18 @@ export default async function TenantLayout({
   return (
     <div className="min-h-screen">
       <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-3">
-        <span className="font-semibold">{tenant.name}</span>
-        <a
-          href={ROOT_URL}
-          className="text-sm text-zinc-500 hover:text-zinc-700"
-        >
+        <div className="flex items-center gap-6">
+          <span className="font-semibold">{tenant.name}</span>
+          <nav className="flex gap-4 text-sm text-zinc-600">
+            <Link href="/" className="hover:text-zinc-900">
+              Companies
+            </Link>
+            <Link href="/catalogue" className="hover:text-zinc-900">
+              Catalogue
+            </Link>
+          </nav>
+        </div>
+        <a href={ROOT_URL} className="text-sm text-zinc-500 hover:text-zinc-700">
           Switch workspace
         </a>
       </header>

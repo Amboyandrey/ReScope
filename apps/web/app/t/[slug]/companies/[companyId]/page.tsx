@@ -17,9 +17,46 @@ import {
   getCompany,
   getSimilarCompanies,
   listScrapeJobs,
+  reprofileCompany,
 } from "@/lib/company-client";
 
 const ACTIVE_STATUSES = new Set(["pending", "scraping"]);
+
+const COMPANY_TYPE_LABELS: Record<string, string> = {
+  manufacturer: "Manufacturer",
+  distributor: "Distributor",
+  service_provider: "Service provider",
+  software: "Software",
+  consultancy: "Consultancy",
+  agency: "Agency",
+  research: "Research",
+  other: "Other",
+};
+
+function CompanyFacts({ company }: { company: CompanyDetail }) {
+  const place = [company.hq_city, company.hq_country].filter(Boolean).join(", ");
+  const facts: [string, string][] = [];
+  if (company.company_type) facts.push(["Type", COMPANY_TYPE_LABELS[company.company_type] ?? company.company_type]);
+  if (place) facts.push(["Location", place]);
+  if (company.industry) facts.push(["Industry", company.industry]);
+  if (company.employee_range) facts.push(["Employees", company.employee_range]);
+  if (company.founded_year) facts.push(["Founded", String(company.founded_year)]);
+  if (Object.keys(company.socials).length > 0) {
+    facts.push(["Socials", Object.keys(company.socials).join(", ")]);
+  }
+  if (facts.length === 0) return null;
+
+  return (
+    <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+      {facts.map(([label, value]) => (
+        <div key={label}>
+          <dt className="text-xs text-zinc-400">{label}</dt>
+          <dd className="text-zinc-700">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export default function CompanyProfilePage() {
   const router = useRouter();
@@ -71,8 +108,22 @@ export default function CompanyProfilePage() {
             {company.domain}
           </a>
         </div>
-        <StatusBadge status={company.profile_status} />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={async () => {
+              await reprofileCompany(companyId);
+              await refresh();
+            }}
+            disabled={ACTIVE_STATUSES.has(company.profile_status)}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            Re-profile now
+          </button>
+          <StatusBadge status={company.profile_status} />
+        </div>
       </div>
+
+      <CompanyFacts company={company} />
 
       {latestJob && (
         <div className="mt-4 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm">

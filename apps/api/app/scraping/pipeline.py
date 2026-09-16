@@ -29,7 +29,7 @@ from app.models import (
 )
 from app.scraping.discovery import discover_candidate_urls
 from app.scraping.extraction import MODEL as EXTRACTION_MODEL
-from app.scraping.extraction import extract_profile
+from app.scraping.extraction import ExtractedFacts, extract_profile
 from app.scraping.render import RenderedPage, render_pages
 from app.scraping.visual_agent import MODEL as VISUAL_MODEL
 from app.scraping.visual_agent import explore_visually
@@ -48,6 +48,28 @@ _OPUS_OUTPUT_COST_PER_MTOK = Decimal("25.00")
 
 def _cost_usd(tokens_in: int, tokens_out: int, *, input_rate: Decimal, output_rate: Decimal) -> Decimal:
     return Decimal(tokens_in) / 1_000_000 * input_rate + Decimal(tokens_out) / 1_000_000 * output_rate
+
+
+def _clean_country_code(code: str | None) -> str | None:
+    """Two-letter ISO 3166-1 alpha-2 or nothing — the model is told to use this format, but this
+    is what actually keeps a longer free-text guess from overflowing the column or corrupting the
+    catalogue's country filter with something no other company's row will ever match."""
+    if code and len(code) == 2 and code.isalpha():
+        return code.upper()
+    return None
+
+
+def _apply_facts(company: Company, facts: ExtractedFacts) -> None:
+    """Write extraction's company-level facts onto `company`, truncating anything that (despite
+    the prompt) came back longer than its column — a formatting slip in one field shouldn't fail
+    an otherwise-successful scrape."""
+    company.hq_country = _clean_country_code(facts.hq_country)
+    company.hq_city = facts.hq_city[:120] if facts.hq_city else None
+    company.industry = facts.industry[:120] if facts.industry else None
+    company.company_type = facts.company_type
+    company.employee_range = facts.employee_range[:32] if facts.employee_range else None
+    company.founded_year = facts.founded_year
+    company.socials = facts.socials
 
 
 async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) -> None:
@@ -159,6 +181,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
         )
 
         company.overview = result.profile.overview
+        _apply_facts(company, result.profile.facts)
 
         await db.execute(
             delete(Offering).where(Offering.tenant_id == company.tenant_id, Offering.company_id == company.id)
@@ -206,6 +229,23 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     company.last_profiled_at = job.finished_at
 
 
+def _company_summary_text(company: Company) -> str | None:
+    """The text a query like "robotics manufacturer in Germany" needs to match against — facts up
+    front, since a query naming a type or a place should land on this row and not only on a
+    specific offering that happens to mention it."""
+    if not company.overview:
+        return None
+    lead_parts = [company.name]
+    if company.company_type:
+        place = ", ".join(p for p in (company.hq_city, company.hq_country) if p)
+        lead_parts.append(f"{company.company_type.value} in {place}" if place else company.company_type.value)
+    elif company.hq_city or company.hq_country:
+        lead_parts.append(", ".join(p for p in (company.hq_city, company.hq_country) if p))
+    lead = " — ".join(lead_parts)
+    industry = f" {company.industry}." if company.industry else ""
+    return f"{lead}.{industry} {company.overview}"
+
+
 async def _embed_profile(
     db: AsyncSession, *, company: Company, offerings: list[Offering], competencies: list[Competency]
 ) -> None:
@@ -216,8 +256,9 @@ async def _embed_profile(
     """
     texts: list[str] = []
     sources: list[tuple[SourceKind, uuid.UUID]] = []
-    if company.overview:
-        texts.append(company.overview)
+    summary = _company_summary_text(company)
+    if summary:
+        texts.append(summary)
         sources.append((SourceKind.COMPANY_SUMMARY, company.id))
     for offering in offerings:
         texts.append(f"{offering.name}: {offering.description}" if offering.description else offering.name)

@@ -74,7 +74,7 @@ def _extraction_result(*, overview: str, offering_name: str, competency_name: st
                 ExtractedOffering(
                     kind="product",
                     name=offering_name,
-                    description=None,
+                    description=f"What {offering_name} is.",
                     category=None,
                     evidence=[ExtractedEvidence(url="https://example.com", quote="evidence")],
                 )
@@ -83,7 +83,7 @@ def _extraction_result(*, overview: str, offering_name: str, competency_name: st
                 ExtractedCompetency(
                     kind="technology",
                     name=competency_name,
-                    description=None,
+                    description=f"How the company has {competency_name}.",
                     evidence=[ExtractedEvidence(url="https://example.com", quote="evidence")],
                 )
             ],

@@ -91,3 +91,14 @@ export async function setChatModel(provider: ChatProvider, model: string): Promi
   });
   await throwIfNotOk(res);
 }
+
+/** The chat-capable model ids `provider` reports for the workspace's key — an affordance for a
+ * dropdown, not a gate; throws (with the provider's own message) when the list can't be loaded,
+ * which the caller treats as "fall back to typing a model id manually", never as a broken page. */
+export async function getAvailableModels(provider: ChatProvider): Promise<string[]> {
+  const res = await tenantFetch(
+    `/api/v1/tenants/current/chat-model/available-models?provider=${provider}`,
+  );
+  await throwIfNotOk(res);
+  return ((await res.json()) as { models: string[] }).models;
+}

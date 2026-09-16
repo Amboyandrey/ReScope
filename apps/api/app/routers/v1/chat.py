@@ -5,16 +5,16 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from decimal import Decimal
-from typing import Annotated, cast
+from typing import Annotated
 
-import anthropic
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
 
 from app.core.db import async_session_factory, set_tenant_scope
 from app.deps.db import DbSession
 from app.deps.tenant import TenantCtx, require_role
-from app.models import MessageRole, Role, UsageKind
+from app.llm import build_chat_provider
+from app.models import MessageRole, Provider, Role, UsageKind
 from app.schemas.chat import (
     ConversationResponse,
     CreateConversationRequest,
@@ -35,7 +35,7 @@ from app.services.chat import (
     resolve_citations,
     retrieve_context,
 )
-from app.services.llm import resolve_anthropic_key
+from app.services.llm import resolve_chat_model
 from app.services.quotas import assert_within_chat_quota
 from app.services.usage import record_usage_event
 
@@ -43,10 +43,11 @@ router = APIRouter(prefix="/tenants/current/conversations", tags=["chat"])
 
 _ViewerCtx = Annotated[TenantCtx, Depends(require_role(Role.VIEWER))]
 
-CHAT_MODEL = "claude-sonnet-5"
 CHAT_MAX_TOKENS = 2048
 # Anthropic doesn't publish a chat-specific rate card here the way docs/PLAN.md §5 has one for
-# extraction — reuses that same Sonnet rate, the closest real number available.
+# extraction — reuses that same Sonnet rate, the closest real number available. Only ever applied
+# when Anthropic is billing the call (docs/PLAN.md §18) — a workspace on any other provider's own
+# key has no rate card here, so its chat usage is recorded at `cost_usd=0`.
 _CHAT_INPUT_COST_PER_MTOK = Decimal("2.00")
 _CHAT_OUTPUT_COST_PER_MTOK = Decimal("10.00")
 
@@ -110,7 +111,7 @@ async def send_message(
     items = await retrieve_context(db, tenant_id=ctx.tenant.id, query=body.content, filters=filters)
     context = build_context(items)
     history = await recent_history_for_prompt(db, tenant_id=ctx.tenant.id, conversation_id=conversation.id)
-    resolved_key = await resolve_anthropic_key(db, tenant_id=ctx.tenant.id)
+    resolved = await resolve_chat_model(db, tenant=ctx.tenant)
 
     await add_message(
         db,
@@ -124,31 +125,31 @@ async def send_message(
     tenant_id = ctx.tenant.id
 
     async def stream() -> AsyncIterator[str]:
-        client = anthropic.AsyncAnthropic(api_key=resolved_key.api_key)
+        provider = build_chat_provider(resolved.provider, resolved.api_key)
         system_prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context}" if context else SYSTEM_PROMPT
-        anthropic_messages = [*history, {"role": "user", "content": body.content}]
+        chat_messages = [*history, {"role": "user", "content": body.content}]
         answer = ""
-        tokens_in = tokens_out = 0
         try:
-            async with client.messages.stream(
-                model=CHAT_MODEL,
-                max_tokens=CHAT_MAX_TOKENS,
-                system=system_prompt,
-                messages=cast("list[anthropic.types.MessageParam]", anthropic_messages),
-            ) as message_stream:
-                async for text in message_stream.text_stream:
-                    answer += text
-                    yield f"data: {json.dumps(text)}\n\n"
-                final = await message_stream.get_final_message()
-                tokens_in, tokens_out = final.usage.input_tokens, final.usage.output_tokens
+            async for text in provider.stream_text(
+                system=system_prompt, messages=chat_messages, model=resolved.model, max_tokens=CHAT_MAX_TOKENS
+            ):
+                answer += text
+                yield f"data: {json.dumps(text)}\n\n"
         except Exception as exc:  # noqa: BLE001 — surfaced as an error event, not a broken stream
             yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
             return
 
+        usage = provider.usage
+        tokens_in = usage.tokens_in if usage else 0
+        tokens_out = usage.tokens_out if usage else 0
         citations = resolve_citations(answer, items)
+        # No rate card exists for any provider but Anthropic (docs/PLAN.md §18) — a workspace
+        # chatting on its own OpenAI/Gemini/Nebius key pays that provider directly, not ReCore.
         cost = (
             Decimal(tokens_in) / 1_000_000 * _CHAT_INPUT_COST_PER_MTOK
             + Decimal(tokens_out) / 1_000_000 * _CHAT_OUTPUT_COST_PER_MTOK
+            if resolved.provider == Provider.ANTHROPIC
+            else Decimal(0)
         )
 
         async with async_session_factory() as stream_db:
@@ -168,11 +169,11 @@ async def send_message(
                 tenant_id=tenant_id,
                 job_id=None,
                 kind=UsageKind.CHAT,
-                model=CHAT_MODEL,
+                model=resolved.model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 cost_usd=float(cost),
-                billed_to=resolved_key.billed_to,
+                billed_to=resolved.billed_to,
             )
             await stream_db.commit()
 

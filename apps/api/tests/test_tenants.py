@@ -1,6 +1,9 @@
 """Tenant creation, membership listing, and the isolation row-level security backstops."""
 
+from types import SimpleNamespace
+
 import httpx
+import openai
 import pytest
 from httpx import AsyncClient
 
@@ -146,6 +149,110 @@ async def test_switching_to_browser_use_cloud_succeeds_once_a_key_is_registered(
     )
     assert response.status_code == 200
     assert response.json()["scrape_provider"] == "browser_use_cloud"
+
+
+def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, chat_ok: bool = True) -> None:
+    async def list_ok() -> object:
+        return SimpleNamespace()
+
+    async def create_impl(**_: object) -> object:
+        if not chat_ok:
+            request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+            response = httpx.Response(404, request=request)
+            raise openai.APIStatusError("model not found", response=response, body=None)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        openai,
+        "AsyncOpenAI",
+        lambda **_: SimpleNamespace(
+            models=SimpleNamespace(list=list_ok),
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create_impl)),
+        ),
+    )
+
+
+async def test_switching_chat_model_to_a_provider_without_a_key_is_rejected(client: AsyncClient) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "openai", "model": "gpt-4o-mini"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_switching_chat_model_succeeds_once_a_key_is_registered_and_the_model_validates(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_openai(monkeypatch)
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "openai", "api_key": "sk-openai-abc"},
+        headers=headers,
+    )
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "openai", "model": "gpt-4o-mini"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chat_provider"] == "openai"
+    assert body["chat_model"] == "gpt-4o-mini"
+
+
+async def test_switching_chat_model_rejects_a_model_the_key_cant_actually_use(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await signup(client)
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    _install_fake_openai(monkeypatch)
+    await client.put(
+        "/api/v1/tenants/current/credentials",
+        json={"provider": "openai", "api_key": "sk-openai-abc"},
+        headers=headers,
+    )
+
+    _install_fake_openai(monkeypatch, chat_ok=False)
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "openai", "model": "bogus-model"},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_member_cannot_change_the_chat_model(client: AsyncClient) -> None:
+    await signup(client, email="owner@example.com")
+    tenant = (await create_tenant(client)).json()
+    headers = tenant_headers(client, tenant["slug"])
+
+    invite = await client.post(
+        "/api/v1/tenants/current/invitations",
+        json={"email": "member@example.com", "role": "member"},
+        headers=headers,
+    )
+    token = invite.json()["token"]
+    client.cookies.clear()
+    await signup(client, email="member@example.com")
+    await client.post(f"/api/v1/invitations/{token}/accept", headers=csrf_headers(client))
+
+    response = await client.put(
+        "/api/v1/tenants/current/chat-model",
+        json={"provider": "anthropic", "model": "claude-sonnet-5"},
+        headers=tenant_headers(client, tenant["slug"]),
+    )
+    assert response.status_code == 403
 
 
 async def test_member_cannot_change_the_scrape_provider(client: AsyncClient) -> None:

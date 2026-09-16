@@ -8,9 +8,15 @@ from app.deps.auth import CurrentUser
 from app.deps.db import DbSession
 from app.deps.tenant import TenantContext, TenantCtx, require_role
 from app.models import Role
-from app.schemas.tenant import CreateTenantRequest, MyTenantResponse, SetScrapeProviderRequest, TenantResponse
+from app.schemas.tenant import (
+    CreateTenantRequest,
+    MyTenantResponse,
+    SetChatModelRequest,
+    SetScrapeProviderRequest,
+    TenantResponse,
+)
 from app.services.audit import record_audit
-from app.services.tenants import create_tenant, list_my_tenants, set_scrape_provider
+from app.services.tenants import create_tenant, list_my_tenants, set_chat_model, set_scrape_provider
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -57,5 +63,21 @@ async def set_provider(body: SetScrapeProviderRequest, ctx: _AdminCtx, db: DbSes
         target_type="tenant",
         target_id=str(ctx.tenant.id),
         metadata={"provider": body.provider.value},
+    )
+    return TenantResponse.model_validate(tenant)
+
+
+@router.put("/current/chat-model", response_model=TenantResponse)
+async def set_chat(body: SetChatModelRequest, ctx: _AdminCtx, db: DbSession) -> TenantResponse:
+    """Switch which provider and model answer this tenant's chat messages."""
+    tenant = await set_chat_model(db, tenant=ctx.tenant, provider=body.provider, model=body.model)
+    await record_audit(
+        db,
+        tenant_id=ctx.tenant.id,
+        actor_id=ctx.user.id,
+        action="tenant.chat_model_changed",
+        target_type="tenant",
+        target_id=str(ctx.tenant.id),
+        metadata={"provider": body.provider.value, "model": body.model},
     )
     return TenantResponse.model_validate(tenant)

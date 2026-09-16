@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models import Provider, UsageBilledTo
+from app.core.errors import CredentialNotFound
+from app.models import Provider, Tenant, UsageBilledTo
 from app.services.credentials import decrypt_credential_key, get_active_credential
 
 
@@ -31,6 +32,45 @@ async def has_own_anthropic_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> bo
     """Whether quota checks should be skipped for this tenant — usage is still metered either
     way (see services/usage.py's `billed_to`), just not counted against the plan's ceiling."""
     credential = await get_active_credential(db, tenant_id=tenant_id, provider=Provider.ANTHROPIC)
+    return credential is not None
+
+
+@dataclass(frozen=True)
+class ResolvedChatModel:
+    provider: Provider
+    model: str
+    api_key: str
+    billed_to: UsageBilledTo
+
+
+async def resolve_chat_model(db: AsyncSession, *, tenant: Tenant) -> ResolvedChatModel:
+    """The provider, model, and key this tenant's chat messages currently run on (docs/PLAN.md
+    §18). Anthropic falls back to the platform's own key like every other Anthropic call; the
+    other three providers have no platform key, so a tenant configured for one of them must have
+    registered its own (`set_chat_model` refuses to save that choice otherwise)."""
+    provider, model = tenant.chat_provider, tenant.chat_model
+    if provider == Provider.ANTHROPIC:
+        resolved = await resolve_anthropic_key(db, tenant_id=tenant.id)
+        return ResolvedChatModel(
+            provider=provider, model=model, api_key=resolved.api_key, billed_to=resolved.billed_to
+        )
+
+    credential = await get_active_credential(db, tenant_id=tenant.id, provider=provider)
+    if credential is None:
+        raise CredentialNotFound()
+    return ResolvedChatModel(
+        provider=provider,
+        model=model,
+        api_key=decrypt_credential_key(credential),
+        billed_to=UsageBilledTo.TENANT,
+    )
+
+
+async def has_own_chat_key(db: AsyncSession, *, tenant: Tenant) -> bool:
+    """Whether this tenant is exempt from the chat quota — on its own key, for whichever provider
+    its chat is currently configured to use (docs/PLAN.md §18 generalizes the Anthropic-only
+    exemption from §12 to all four chat providers)."""
+    credential = await get_active_credential(db, tenant_id=tenant.id, provider=tenant.chat_provider)
     return credential is not None
 
 

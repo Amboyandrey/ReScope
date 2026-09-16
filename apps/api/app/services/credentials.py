@@ -5,15 +5,19 @@ logged and never appears in any response after the credential is stored.
 """
 
 import uuid
+from collections.abc import Awaitable, Callable
+from functools import partial
 
 import anthropic
 import httpx
+import openai
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import EncryptedSecret, decrypt_secret, encrypt_secret
 from app.core.errors import CredentialNotFound, CredentialValidationFailed
+from app.llm import OPENAI_COMPATIBLE_BASE_URLS
 from app.models import Provider, TenantCredential
 
 _BROWSER_USE_ACCOUNT_URL = "https://api.browser-use.com/api/v2/billing/account"
@@ -48,7 +52,62 @@ async def _validate_browser_use_key(api_key: str) -> None:
         )
 
 
-_VALIDATORS = {Provider.ANTHROPIC: _validate_anthropic_key, Provider.BROWSER_USE: _validate_browser_use_key}
+async def _validate_openai_compatible_key(provider: Provider, api_key: str) -> None:
+    """`GET /models` rather than a chat completion — the cheapest authenticated read every one of
+    these providers exposes, and one that needs no model id guessed in advance (docs/PLAN.md
+    §18). Confirming a *specific* model works is `validate_chat_model`'s job, done separately when
+    a workspace picks one."""
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=OPENAI_COMPATIBLE_BASE_URLS[provider])
+    try:
+        await client.models.list()
+    except openai.APIStatusError as exc:
+        raise CredentialValidationFailed(
+            f"{provider.value.title()} rejected this key: {exc.message}"
+        ) from exc
+    except openai.APIConnectionError as exc:
+        raise CredentialValidationFailed(
+            f"Could not reach {provider.value.title()} to validate this key."
+        ) from exc
+
+
+async def validate_chat_model(provider: Provider, api_key: str, model: str) -> None:
+    """Prove a specific model actually answers on this key — a one-token reply, the same "prove
+    it works, do no real work" rule credential validation follows. Raised errors are the
+    provider's own, surfaced verbatim so a typo'd model id fails with a message that says so."""
+    if provider == Provider.ANTHROPIC:
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        try:
+            await client.messages.create(
+                model=model, max_tokens=1, messages=[{"role": "user", "content": "hi"}]
+            )
+        except anthropic.APIStatusError as exc:
+            raise CredentialValidationFailed(f"Anthropic rejected model {model!r}: {exc.message}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise CredentialValidationFailed("Could not reach Anthropic to validate this model.") from exc
+        return
+
+    openai_client = openai.AsyncOpenAI(api_key=api_key, base_url=OPENAI_COMPATIBLE_BASE_URLS[provider])
+    try:
+        await openai_client.chat.completions.create(
+            model=model, max_tokens=1, messages=[{"role": "user", "content": "hi"}]
+        )
+    except openai.APIStatusError as exc:
+        raise CredentialValidationFailed(
+            f"{provider.value.title()} rejected model {model!r}: {exc.message}"
+        ) from exc
+    except openai.APIConnectionError as exc:
+        raise CredentialValidationFailed(
+            f"Could not reach {provider.value.title()} to validate this model."
+        ) from exc
+
+
+_VALIDATORS: dict[Provider, Callable[[str], Awaitable[None]]] = {
+    Provider.ANTHROPIC: _validate_anthropic_key,
+    Provider.BROWSER_USE: _validate_browser_use_key,
+    Provider.OPENAI: partial(_validate_openai_compatible_key, Provider.OPENAI),
+    Provider.GEMINI: partial(_validate_openai_compatible_key, Provider.GEMINI),
+    Provider.NEBIUS: partial(_validate_openai_compatible_key, Provider.NEBIUS),
+}
 
 
 async def set_credential(

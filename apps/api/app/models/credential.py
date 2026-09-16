@@ -17,6 +17,11 @@ from app.models.mixins import UUIDPrimaryKeyMixin
 class Provider(enum.StrEnum):
     ANTHROPIC = "anthropic"
     BROWSER_USE = "browser_use"
+    # Chat-only alternatives to the platform's default Anthropic model (docs/PLAN.md §16) — never
+    # used for scraping, which stays on Anthropic for its structured-output and vision needs.
+    OPENAI = "openai"
+    GEMINI = "gemini"
+    NEBIUS = "nebius"
 
 
 class TenantCredential(Base, UUIDPrimaryKeyMixin):

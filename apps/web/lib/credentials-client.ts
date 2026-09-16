@@ -1,9 +1,10 @@
 import { AuthError, readCsrfCookie } from "./auth-client";
 import { API_URL, ROOT_DOMAIN } from "./config";
 import { tenantSlugFromHost } from "./tenant";
-import type { ScrapeProvider } from "./tenant-client";
+import type { ChatProvider, ScrapeProvider } from "./tenant-client";
 
-export type Provider = "anthropic" | "browser_use";
+export type Provider = "anthropic" | "browser_use" | "openai" | "gemini" | "nebius";
+export type { ChatProvider };
 
 export type Credential = {
   id: string;
@@ -60,16 +61,28 @@ export async function deleteCredential(provider: Provider): Promise<void> {
   await throwIfNotOk(res);
 }
 
-export async function getCurrentTenantSettings(): Promise<{ scrape_provider: ScrapeProvider }> {
+export async function getCurrentTenantSettings(): Promise<{
+  scrape_provider: ScrapeProvider;
+  chat_provider: ChatProvider;
+  chat_model: string;
+}> {
   const res = await tenantFetch("/api/v1/tenants/current");
   await throwIfNotOk(res);
-  return (await res.json()) as { scrape_provider: ScrapeProvider };
+  return (await res.json()) as { scrape_provider: ScrapeProvider; chat_provider: ChatProvider; chat_model: string };
 }
 
 export async function setScrapeProvider(provider: ScrapeProvider): Promise<void> {
   const res = await tenantFetch("/api/v1/tenants/current/scrape-provider", {
     method: "PUT",
     body: JSON.stringify({ provider }),
+  });
+  await throwIfNotOk(res);
+}
+
+export async function setChatModel(provider: ChatProvider, model: string): Promise<void> {
+  const res = await tenantFetch("/api/v1/tenants/current/chat-model", {
+    method: "PUT",
+    body: JSON.stringify({ provider, model }),
   });
   await throwIfNotOk(res);
 }

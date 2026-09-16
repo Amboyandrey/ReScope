@@ -147,6 +147,11 @@ class BrowserUseKeyRequired(AppError):
     detail = "Register a Browser Use key (or ask the platform to enable one) before switching to it."
 
 
+class ChatKeyRequired(AppError):
+    status_code = 422
+    detail = "Register a key for that provider before switching chat to it."
+
+
 class ConversationNotFound(AppError):
     status_code = 404
     detail = "Conversation not found."

@@ -5,6 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.models.credential import Provider
 from app.models.role import Role
 from app.models.tenant import ScrapeProvider
 
@@ -18,12 +19,19 @@ class SetScrapeProviderRequest(BaseModel):
     provider: ScrapeProvider
 
 
+class SetChatModelRequest(BaseModel):
+    provider: Provider
+    model: str = Field(min_length=1, max_length=200)
+
+
 class TenantResponse(BaseModel):
     id: uuid.UUID
     slug: str
     name: str
     plan_id: str
     scrape_provider: ScrapeProvider
+    chat_provider: Provider
+    chat_model: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -9,8 +9,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+from app.models.credential import Provider
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.role import Role
+
+# The platform's own default for a tenant that has never chosen a chat provider/model (docs/PLAN.md
+# §18) — the same model `app/routers/v1/chat.py` hardcoded before this became configurable.
+DEFAULT_CHAT_PROVIDER = Provider.ANTHROPIC
+DEFAULT_CHAT_MODEL = "claude-sonnet-5"
 
 
 class ScrapeProvider(enum.StrEnum):
@@ -43,6 +49,27 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             return ScrapeProvider(value)
         except ValueError:
             return ScrapeProvider.CUSTOM
+
+    @property
+    def chat_provider(self) -> Provider:
+        """Which provider answers this tenant's chat messages (docs/PLAN.md §18) — the platform's
+        default until a workspace picks one of its own via `PUT /tenants/current/chat-model`."""
+        chat = self.settings.get("chat")
+        value = chat.get("provider") if isinstance(chat, dict) else None
+        if not isinstance(value, str):
+            return DEFAULT_CHAT_PROVIDER
+        try:
+            return Provider(value)
+        except ValueError:
+            return DEFAULT_CHAT_PROVIDER
+
+    @property
+    def chat_model(self) -> str:
+        chat = self.settings.get("chat")
+        if not isinstance(chat, dict):
+            return DEFAULT_CHAT_MODEL
+        model = chat.get("model")
+        return model if isinstance(model, str) and model else DEFAULT_CHAT_MODEL
 
 
 class Membership(Base):

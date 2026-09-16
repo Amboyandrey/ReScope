@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import UsageEvent, UsageKind
+from app.models import UsageBilledTo, UsageEvent, UsageKind
 
 
 async def record_usage_event(
@@ -19,6 +19,7 @@ async def record_usage_event(
     tokens_in: int,
     tokens_out: int,
     cost_usd: float,
+    billed_to: UsageBilledTo = UsageBilledTo.PLATFORM,
 ) -> UsageEvent:
     """Append one row. Callers never update or delete it afterward."""
     event = UsageEvent(
@@ -29,6 +30,7 @@ async def record_usage_event(
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         cost_usd=cost_usd,
+        billed_to=billed_to,
     )
     db.add(event)
     await db.flush()

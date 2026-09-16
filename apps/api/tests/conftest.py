@@ -53,6 +53,12 @@ def _force_test_redis_db_index() -> None:
         os.environ["REDIS_URL"] = urlunsplit((scheme, netloc, "/15", query, fragment))
 
 
+def _ensure_test_master_key() -> None:
+    """A fixed, obviously-fake key so tenant-credential tests can encrypt/decrypt without a real
+    deploy's secret — never used outside this test run (see app/core/crypto.py)."""
+    os.environ.setdefault("MASTER_KEY", "KrDfsQpVP8DpASrl+dxgcbvaivbQotdAQmC2Y8v0O5o=")
+
+
 async def _ensure_database_exists(url: str) -> None:
     """Create the `_test` database if it doesn't exist yet (Postgres has no CREATE DATABASE IF NOT EXISTS)."""
     scheme, netloc, path, _, _ = urlsplit(url)
@@ -71,6 +77,7 @@ async def _ensure_database_exists(url: str) -> None:
 
 _force_test_database_urls()
 _force_test_redis_db_index()
+_ensure_test_master_key()
 asyncio.run(_ensure_database_exists(os.environ["DATABASE_URL"]))
 
 # Imported only after the overrides above: Settings is lru_cache'd on first call.

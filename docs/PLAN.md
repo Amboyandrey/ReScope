@@ -294,8 +294,9 @@ ever called by services that are about to make the call, never by a router). Add
 key is audited; the audit row carries `last4`, never the key.
 
 **Validation on save.** An Anthropic key is checked with a minimal `messages.create` (a one-token
-reply) before it's stored; a Browser Use key with `GET /api/v2/me` (or the cheapest authenticated
-read the API exposes). A key that fails is rejected with the provider's own error, not stored.
+reply) before it's stored; a Browser Use key with `GET /api/v2/billing/account`, the cheapest
+authenticated read the API exposes. A key that fails is rejected with the provider's own error,
+not stored.
 
 **Resolution.** `services/llm.py::anthropic_client_for(tenant)` returns a client on the tenant's
 key when one exists, else the platform key, and reports which — every model call site (extraction,

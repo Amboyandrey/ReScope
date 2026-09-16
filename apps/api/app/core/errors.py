@@ -128,3 +128,15 @@ class TagAlreadyExists(AppError):
 class SavedSearchNotFound(AppError):
     status_code = 404
     detail = "Saved search not found."
+
+
+class CredentialNotFound(AppError):
+    status_code = 404
+    detail = "No credential is registered for that provider."
+
+
+class CredentialValidationFailed(AppError):
+    """The detail is filled in with the provider's own rejection reason at raise time."""
+
+    status_code = 422
+    detail = "That key could not be validated."

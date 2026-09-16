@@ -66,6 +66,10 @@ services:
       CORS_ORIGINS: '["http://rescope.localhost:3000"]'
       DEBUG: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+      # Dev-only — wraps every workspace-registered credential's own data key (app/core/crypto.py).
+      # Rotate for any real deploy; see infra/.env.example.
+      MASTER_KEY: ${MASTER_KEY:-eJ6vFr/16yVNzCb3BrN0S/fl8VdmJIr7caeqnGoCitQ=}
       EMBEDDINGS_URL: http://embeddings:80
     volumes:
       # Shared with `scraper` below: it writes Tier 2's screenshots here, the API reads them back
@@ -109,6 +113,8 @@ services:
       APP_DATABASE_URL: postgresql+asyncpg://rescope_app:rescope_app_dev_only@postgres:5432/rescope
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+      MASTER_KEY: ${MASTER_KEY:-eJ6vFr/16yVNzCb3BrN0S/fl8VdmJIr7caeqnGoCitQ=}
       EMBEDDINGS_URL: http://embeddings:80
     volumes:
       - scrape_storage:/app/storage

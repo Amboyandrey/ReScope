@@ -69,12 +69,12 @@ def _prompt(step: int, max_steps: int) -> str:
 
 
 async def _decide_next_action(
-    screenshot_png: bytes, *, step: int, max_steps: int
+    screenshot_png: bytes, *, step: int, max_steps: int, api_key: str | None
 ) -> tuple[VisualAction, int, int]:
     """One structured-output call, given the current screenshot. Returns the action plus the
     call's own token usage, so the caller can fold it into the job's running total."""
     settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
+    client = anthropic.AsyncAnthropic(api_key=api_key or settings.anthropic_api_key or None)
     response = await client.messages.parse(
         model=MODEL,
         max_tokens=1024,
@@ -118,7 +118,7 @@ async def _execute(browser_page: Page, action: VisualAction) -> None:
 
 
 async def explore_visually(
-    browser: Browser, start_url: str, *, max_steps: int = MAX_STEPS
+    browser: Browser, start_url: str, *, max_steps: int = MAX_STEPS, api_key: str | None = None
 ) -> ExplorationResult:
     """Click around a site for up to `max_steps` steps, capturing each state it reveals as a
     `RenderedPage` (markdown plus a screenshot). Never raises — a page that errors, an unsafe
@@ -142,7 +142,7 @@ async def explore_visually(
             if len(screenshot) > _SCREENSHOT_MAX_BYTES:
                 break
             action, step_tokens_in, step_tokens_out = await _decide_next_action(
-                screenshot, step=step, max_steps=max_steps
+                screenshot, step=step, max_steps=max_steps, api_key=api_key
             )
             tokens_in += step_tokens_in
             tokens_out += step_tokens_out

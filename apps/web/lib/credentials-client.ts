@@ -1,6 +1,7 @@
 import { AuthError, readCsrfCookie } from "./auth-client";
 import { API_URL, ROOT_DOMAIN } from "./config";
 import { tenantSlugFromHost } from "./tenant";
+import type { ScrapeProvider } from "./tenant-client";
 
 export type Provider = "anthropic" | "browser_use";
 
@@ -56,5 +57,19 @@ export async function setCredential(provider: Provider, apiKey: string): Promise
 
 export async function deleteCredential(provider: Provider): Promise<void> {
   const res = await tenantFetch(`/api/v1/tenants/current/credentials/${provider}`, { method: "DELETE" });
+  await throwIfNotOk(res);
+}
+
+export async function getCurrentTenantSettings(): Promise<{ scrape_provider: ScrapeProvider }> {
+  const res = await tenantFetch("/api/v1/tenants/current");
+  await throwIfNotOk(res);
+  return (await res.json()) as { scrape_provider: ScrapeProvider };
+}
+
+export async function setScrapeProvider(provider: ScrapeProvider): Promise<void> {
+  const res = await tenantFetch("/api/v1/tenants/current/scrape-provider", {
+    method: "PUT",
+    body: JSON.stringify({ provider }),
+  });
   await throwIfNotOk(res);
 }

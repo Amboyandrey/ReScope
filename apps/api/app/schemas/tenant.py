@@ -6,6 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.models.role import Role
+from app.models.tenant import ScrapeProvider
 
 
 class CreateTenantRequest(BaseModel):
@@ -13,11 +14,16 @@ class CreateTenantRequest(BaseModel):
     slug: str | None = Field(default=None, min_length=1, max_length=63)
 
 
+class SetScrapeProviderRequest(BaseModel):
+    provider: ScrapeProvider
+
+
 class TenantResponse(BaseModel):
     id: uuid.UUID
     slug: str
     name: str
     plan_id: str
+    scrape_provider: ScrapeProvider
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -23,18 +23,22 @@ from app.models import (
     ScrapeJob,
     ScrapeMode,
     ScrapePage,
+    ScrapeProvider,
     ScrapeStatus,
     SourceKind,
+    Tenant,
     UsageKind,
 )
+from app.scraping.browser_use_cloud import BrowserUseTaskFailed, run_browser_use_task
 from app.scraping.discovery import discover_candidate_urls
 from app.scraping.extraction import MODEL as EXTRACTION_MODEL
-from app.scraping.extraction import ExtractedFacts, extract_profile
+from app.scraping.extraction import ExtractedFacts, ExtractedProfile, extract_profile
+from app.scraping.merge import merge_profiles
 from app.scraping.render import RenderedPage, render_pages
 from app.scraping.visual_agent import MODEL as VISUAL_MODEL
 from app.scraping.visual_agent import explore_visually
 from app.services.embeddings import MODEL_NAME, embed_texts
-from app.services.llm import resolve_anthropic_key
+from app.services.llm import resolve_anthropic_key, resolve_browser_use_key
 from app.services.usage import record_usage_event
 
 MAX_CANDIDATE_PAGES = 12
@@ -45,6 +49,9 @@ _SONNET_INPUT_COST_PER_MTOK = Decimal("2.00")
 _SONNET_OUTPUT_COST_PER_MTOK = Decimal("10.00")
 _OPUS_INPUT_COST_PER_MTOK = Decimal("5.00")
 _OPUS_OUTPUT_COST_PER_MTOK = Decimal("25.00")
+# Browser Use Cloud bills by step, not by token — this platform has no visibility into their own
+# per-call cost, so a flat per-step estimate is what usage_events records instead.
+_BROWSER_USE_COST_PER_STEP = Decimal("0.01")
 
 
 def _cost_usd(tokens_in: int, tokens_out: int, *, input_rate: Decimal, output_rate: Decimal) -> Decimal:
@@ -73,6 +80,40 @@ def _apply_facts(company: Company, facts: ExtractedFacts) -> None:
     company.socials = facts.socials
 
 
+async def _run_browser_use_deep_mode(
+    db: AsyncSession, *, job: ScrapeJob, company: Company
+) -> tuple[ExtractedProfile | None, list[RenderedPage]]:
+    """Run deep mode through Browser Use Cloud instead of the custom agent. Never raises — no key,
+    an unreachable API, or a failed task all just mean deep mode found nothing extra this run,
+    the same graceful degradation the custom agent's own exploration loop already gives Tier 0/1."""
+    resolved = await resolve_browser_use_key(db, tenant_id=job.tenant_id)
+    if resolved is None:
+        return None, []
+
+    try:
+        result = await run_browser_use_task(
+            api_key=resolved.api_key, website_url=company.website_url, domain=company.domain
+        )
+    except BrowserUseTaskFailed:
+        return None, []
+
+    if result.steps:
+        cost = _BROWSER_USE_COST_PER_STEP * result.steps
+        job.cost_usd = float(Decimal(str(job.cost_usd)) + cost)
+        await record_usage_event(
+            db,
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            kind=UsageKind.BROWSER_USE_RUN,
+            model="browser-use-llm",
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=float(cost),
+            billed_to=resolved.billed_to,
+        )
+    return result.profile, result.pages
+
+
 async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) -> None:
     """Execute `job` against `company`. Raises on failure — the caller (the arq task) is what
     catches that and marks the job FAILED, matching how ReCore's own connector-indexing job
@@ -80,6 +121,9 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     job.status = ScrapeStatus.RUNNING
     job.started_at = datetime.now(UTC)
     await db.flush()
+
+    tenant = await db.get(Tenant, job.tenant_id)
+    assert tenant is not None  # the job's own tenant, always present for an in-flight scrape
 
     resolved_key = await resolve_anthropic_key(db, tenant_id=job.tenant_id)
 
@@ -98,7 +142,14 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
         company.last_profiled_at = job.finished_at
         return
 
-    if job.mode == ScrapeMode.DEEP:
+    cloud_profile: ExtractedProfile | None = None
+    evidence_pages: list[RenderedPage] = list(rendered)
+
+    if job.mode == ScrapeMode.DEEP and tenant.scrape_provider == ScrapeProvider.BROWSER_USE_CLOUD:
+        cloud_profile, cloud_pages = await _run_browser_use_deep_mode(db, job=job, company=company)
+        evidence_pages = evidence_pages + cloud_pages
+        job.tier_reached = 2
+    elif job.mode == ScrapeMode.DEEP:
         # Explores from the homepage directly rather than Tier 0's candidate list — the whole
         # point of Tier 2 is finding content no static link ever pointed at (behind a tab, an
         # accordion, a "load more" button), so it isn't limited to what Tier 0 already found.
@@ -112,6 +163,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
                 await browser.close()
         job.tier_reached = 2
         rendered = rendered + exploration.pages
+        evidence_pages = evidence_pages + exploration.pages
         if exploration.tokens_in or exploration.tokens_out:
             deep_cost = _cost_usd(
                 exploration.tokens_in,
@@ -134,12 +186,12 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
                 billed_to=resolved_key.billed_to,
             )
 
-    job.pages_fetched = len(rendered)
+    job.pages_fetched = len(evidence_pages)
 
     await db.execute(
         delete(ScrapePage).where(ScrapePage.tenant_id == job.tenant_id, ScrapePage.job_id == job.id)
     )
-    for page in rendered:
+    for page in evidence_pages:
         screenshot_key = save_screenshot(job.tenant_id, job.id, page.screenshot) if page.screenshot else None
         db.add(
             ScrapePage(
@@ -187,8 +239,16 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
             billed_to=resolved_key.billed_to,
         )
 
-        company.overview = result.profile.overview
-        _apply_facts(company, result.profile.facts)
+    # `result` is Tier 1's own extraction (None if there was nothing to send it); `cloud_profile`
+    # is Browser Use Cloud's separately-extracted profile (None unless that provider ran and
+    # succeeded). Either can be missing — only both missing means nothing to write at all.
+    profile = result.profile if result is not None else None
+    if cloud_profile is not None:
+        profile = merge_profiles(profile, cloud_profile) if profile is not None else cloud_profile
+
+    if profile is not None:
+        company.overview = profile.overview
+        _apply_facts(company, profile.facts)
 
         await db.execute(
             delete(Offering).where(Offering.tenant_id == company.tenant_id, Offering.company_id == company.id)
@@ -203,7 +263,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
                 category=item.category,
                 evidence=[e.model_dump() for e in item.evidence],
             )
-            for item in result.profile.offerings
+            for item in profile.offerings
         ]
         db.add_all(offerings)
 
@@ -221,7 +281,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
                 description=comp_item.description,
                 evidence=[e.model_dump() for e in comp_item.evidence],
             )
-            for comp_item in result.profile.competencies
+            for comp_item in profile.competencies
         ]
         db.add_all(competencies)
 

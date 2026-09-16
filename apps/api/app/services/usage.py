@@ -1,6 +1,7 @@
 """Recording and reading the usage ledger — one row per billable scrape-job step."""
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -43,14 +44,20 @@ def _month_start(now: datetime | None = None) -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-async def count_this_month(db: AsyncSession, *, tenant_id: uuid.UUID, kind: UsageKind) -> int:
-    """How many events of `kind` this tenant has recorded since the start of the current month."""
+async def count_this_month(
+    db: AsyncSession, *, tenant_id: uuid.UUID, kind: UsageKind | Sequence[UsageKind]
+) -> int:
+    """How many events of `kind` (or, given several, any of them — e.g. every kind that counts
+    against `deep_runs_per_month`) this tenant has recorded since the start of the current month."""
+    # `UsageKind` is a `StrEnum`, which is itself a `Sequence[str]` — `isinstance(kind, UsageKind)`
+    # is the only reliable way to tell "one kind" from "several", not `isinstance(kind, Sequence)`.
+    kind_filter = UsageEvent.kind == kind if isinstance(kind, UsageKind) else UsageEvent.kind.in_(kind)
     stmt = (
         select(func.count())
         .select_from(UsageEvent)
         .where(
             UsageEvent.tenant_id == tenant_id,
-            UsageEvent.kind == kind,
+            kind_filter,
             UsageEvent.created_at >= _month_start(),
         )
     )

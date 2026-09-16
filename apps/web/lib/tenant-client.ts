@@ -1,11 +1,14 @@
 import { apiFetch, AuthError } from "./auth-client";
 import type { Role } from "./types";
 
+export type ScrapeProvider = "custom" | "browser_use_cloud";
+
 export type Tenant = {
   id: string;
   slug: string;
   name: string;
   plan_id: string;
+  scrape_provider: ScrapeProvider;
   created_at: string;
 };
 

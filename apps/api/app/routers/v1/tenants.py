@@ -1,15 +1,20 @@
 """Creating a tenant and listing the ones the caller belongs to."""
 
-from fastapi import APIRouter, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, status
 
 from app.deps.auth import CurrentUser
 from app.deps.db import DbSession
-from app.deps.tenant import TenantContext
-from app.schemas.tenant import CreateTenantRequest, MyTenantResponse, TenantResponse
+from app.deps.tenant import TenantContext, TenantCtx, require_role
+from app.models import Role
+from app.schemas.tenant import CreateTenantRequest, MyTenantResponse, SetScrapeProviderRequest, TenantResponse
 from app.services.audit import record_audit
-from app.services.tenants import create_tenant, list_my_tenants
+from app.services.tenants import create_tenant, list_my_tenants, set_scrape_provider
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
+
+_AdminCtx = Annotated[TenantCtx, Depends(require_role(Role.ADMIN))]
 
 
 @router.post("", response_model=TenantResponse, status_code=status.HTTP_201_CREATED)
@@ -38,3 +43,19 @@ async def list_mine(user: CurrentUser, db: DbSession) -> list[MyTenantResponse]:
 async def current(ctx: TenantContext) -> TenantResponse:
     """Return the tenant named by the caller's `X-Tenant-Slug` header."""
     return TenantResponse.model_validate(ctx.tenant)
+
+
+@router.put("/current/scrape-provider", response_model=TenantResponse)
+async def set_provider(body: SetScrapeProviderRequest, ctx: _AdminCtx, db: DbSession) -> TenantResponse:
+    """Switch which Tier 2 provider this tenant's deep-mode jobs use."""
+    tenant = await set_scrape_provider(db, tenant=ctx.tenant, provider=body.provider)
+    await record_audit(
+        db,
+        tenant_id=ctx.tenant.id,
+        actor_id=ctx.user.id,
+        action="tenant.scrape_provider_changed",
+        target_type="tenant",
+        target_id=str(ctx.tenant.id),
+        metadata={"provider": body.provider.value},
+    )
+    return TenantResponse.model_validate(tenant)

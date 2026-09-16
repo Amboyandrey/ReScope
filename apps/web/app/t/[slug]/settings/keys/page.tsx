@@ -7,9 +7,12 @@ import {
   type Credential,
   type Provider,
   deleteCredential,
+  getCurrentTenantSettings,
   listCredentials,
   setCredential,
+  setScrapeProvider,
 } from "@/lib/credentials-client";
+import type { ScrapeProvider } from "@/lib/tenant-client";
 
 const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: "Anthropic",
@@ -23,11 +26,25 @@ export default function ApiKeysPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
+  const [scrapeProvider, setScrapeProviderState] = useState<ScrapeProvider | null>(null);
+  const [scrapeProviderError, setScrapeProviderError] = useState<string | null>(null);
+
   const refresh = async () => setCredentials(await listCredentials());
 
   useEffect(() => {
     listCredentials().then(setCredentials);
+    getCurrentTenantSettings().then((t) => setScrapeProviderState(t.scrape_provider));
   }, []);
+
+  async function onScrapeProviderChange(next: ScrapeProvider) {
+    setScrapeProviderError(null);
+    try {
+      await setScrapeProvider(next);
+      setScrapeProviderState(next);
+    } catch (err) {
+      setScrapeProviderError(err instanceof AuthError ? err.message : "Could not switch provider.");
+    }
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -121,6 +138,41 @@ export default function ApiKeysPage() {
         </button>
       </form>
       <FormError message={error} />
+
+      {scrapeProvider !== null && (
+        <section className="mt-10 border-t border-zinc-200 pt-6">
+          <h2 className="text-lg font-semibold">Deep-scan provider</h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Which agent a deep scan uses to explore a site — the built-in agent, or Browser Use
+            Cloud once a Browser Use key is registered above.
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="scrape-provider"
+                checked={scrapeProvider === "custom"}
+                onChange={() => onScrapeProviderChange("custom")}
+              />
+              Built-in agent
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="scrape-provider"
+                checked={scrapeProvider === "browser_use_cloud"}
+                disabled={!registered.get("browser_use")}
+                onChange={() => onScrapeProviderChange("browser_use_cloud")}
+              />
+              Browser Use Cloud
+              {!registered.get("browser_use") && (
+                <span className="text-zinc-400">— register a Browser Use key first</span>
+              )}
+            </label>
+          </div>
+          <FormError message={scrapeProviderError} />
+        </section>
+      )}
     </main>
   );
 }

@@ -140,3 +140,8 @@ class CredentialValidationFailed(AppError):
 
     status_code = 422
     detail = "That key could not be validated."
+
+
+class BrowserUseKeyRequired(AppError):
+    status_code = 422
+    detail = "Register a Browser Use key (or ask the platform to enable one) before switching to it."

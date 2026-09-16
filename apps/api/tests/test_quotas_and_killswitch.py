@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
+from app.core.errors import QuotaExceeded
 from app.models import ScrapeMode, Tenant, UsageKind
 from app.services.platform_settings import set_scraping_paused
 from app.services.quotas import assert_within_quota
@@ -110,6 +111,62 @@ async def test_deep_quota_is_tracked_separately_from_fast(client: AsyncClient, d
         "/api/v1/tenants/current/companies", json={"domain": "example.net", "mode": "deep"}, headers=headers
     )
     assert deep.status_code == 402
+
+
+async def test_deep_quota_is_shared_across_both_tier_2_providers(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """A custom-agent DEEP_PROFILE run and a Browser Use Cloud BROWSER_USE_RUN both count against
+    the same `deep_runs_per_month` ceiling — a tenant can't double it by splitting across the two.
+    Also guards against `count_this_month`'s `UsageKind | Sequence[UsageKind]` overload treating a
+    single `UsageKind` (itself a `str`, and so a `Sequence[str]`) as a sequence of characters."""
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    headers = tenant_headers(client, tenant_data["slug"])
+
+    created = await client.post(
+        "/api/v1/tenants/current/companies", json={"domain": "example.com"}, headers=headers
+    )
+    company_id = created.json()["id"]
+    jobs_resp = await client.get(
+        f"/api/v1/tenants/current/companies/{company_id}/scrape-jobs", headers=headers
+    )
+    job_id = uuid.UUID(jobs_resp.json()[0]["id"])
+
+    await set_tenant_scope(db, tenant_id)
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+    # Free plan's deep_runs_per_month is 2 — one of each kind uses it up.
+    await record_usage_event(
+        db,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        kind=UsageKind.DEEP_PROFILE,
+        model="claude-opus-5",
+        tokens_in=100,
+        tokens_out=50,
+        cost_usd=0.05,
+    )
+    await record_usage_event(
+        db,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        kind=UsageKind.BROWSER_USE_RUN,
+        model="browser-use-llm",
+        tokens_in=0,
+        tokens_out=0,
+        cost_usd=0.04,
+    )
+    await db.commit()
+    await set_tenant_scope(db, tenant_id)
+
+    with pytest.raises(QuotaExceeded):
+        await assert_within_quota(db, tenant=tenant, mode=ScrapeMode.DEEP)
+
+    # A single fast-mode run is still counted only against `profiles_per_month`, unaffected by
+    # the now-exhausted deep ceiling — confirms the single-kind branch wasn't broken along the way.
+    await assert_within_quota(db, tenant=tenant, mode=ScrapeMode.FAST)
 
 
 async def test_company_creation_is_rejected_while_scraping_is_paused(

@@ -1,5 +1,6 @@
 """The tenant boundary: a workspace on its own subdomain, and who belongs to it at what role."""
 
+import enum
 import uuid
 from datetime import datetime
 
@@ -10,6 +11,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.db import Base
 from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.role import Role
+
+
+class ScrapeProvider(enum.StrEnum):
+    """Which Tier 2 provider a tenant's deep-mode jobs use (docs/PLAN.md §13) — a value inside
+    `Tenant.settings`, not its own column, since it's one tenant-chosen option among what will
+    likely grow into several free-form preferences over time."""
+
+    CUSTOM = "custom"
+    BROWSER_USE_CLOUD = "browser_use_cloud"
 
 
 class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -23,6 +33,16 @@ class Tenant(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     plan_id: Mapped[str] = mapped_column(ForeignKey("plans.id"), server_default="free")
     status: Mapped[str] = mapped_column(server_default="active")
     settings: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, server_default="{}")
+
+    @property
+    def scrape_provider(self) -> ScrapeProvider:
+        value = self.settings.get("scrape_provider")
+        if not isinstance(value, str):
+            return ScrapeProvider.CUSTOM
+        try:
+            return ScrapeProvider(value)
+        except ValueError:
+            return ScrapeProvider.CUSTOM
 
 
 class Membership(Base):

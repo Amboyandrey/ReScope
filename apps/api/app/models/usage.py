@@ -23,6 +23,14 @@ class UsageKind(enum.StrEnum):
     DEEP_PROFILE = "deep_profile"
 
 
+class UsageBilledTo(enum.StrEnum):
+    """Whether this run spent the platform's own key or a workspace-registered one (docs/PLAN.md
+    §12) — a tenant on its own key is exempt from quotas, but usage is still recorded here."""
+
+    PLATFORM = "platform"
+    TENANT = "tenant"
+
+
 class UsageEvent(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "usage_events"
     __table_args__ = (
@@ -38,4 +46,7 @@ class UsageEvent(Base, UUIDPrimaryKeyMixin):
     tokens_in: Mapped[int] = mapped_column(Integer)
     tokens_out: Mapped[int] = mapped_column(Integer)
     cost_usd: Mapped[float] = mapped_column(Numeric(10, 4))
+    billed_to: Mapped[UsageBilledTo] = mapped_column(
+        Enum(UsageBilledTo, name="usage_billed_to"), default=UsageBilledTo.PLATFORM
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -62,6 +62,8 @@ services:
       CORS_ORIGINS: '["https://${DOMAIN}"]'
       DEBUG: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+      MASTER_KEY: ${MASTER_KEY}
       EMBEDDINGS_URL: http://embeddings:80
     volumes:
       - scrape_storage:/app/storage
@@ -100,6 +102,8 @@ services:
       APP_DATABASE_URL: postgresql+asyncpg://rescope_app:${RESCOPE_APP_ROLE_PASSWORD}@postgres:5432/rescope
       REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+      MASTER_KEY: ${MASTER_KEY}
       EMBEDDINGS_URL: http://embeddings:80
     volumes:
       - scrape_storage:/app/storage

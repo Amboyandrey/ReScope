@@ -34,6 +34,7 @@ from app.scraping.render import RenderedPage, render_pages
 from app.scraping.visual_agent import MODEL as VISUAL_MODEL
 from app.scraping.visual_agent import explore_visually
 from app.services.embeddings import MODEL_NAME, embed_texts
+from app.services.llm import resolve_anthropic_key
 from app.services.usage import record_usage_event
 
 MAX_CANDIDATE_PAGES = 12
@@ -80,6 +81,8 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     job.started_at = datetime.now(UTC)
     await db.flush()
 
+    resolved_key = await resolve_anthropic_key(db, tenant_id=job.tenant_id)
+
     candidate_urls = await discover_candidate_urls(company.website_url, max_candidates=MAX_CANDIDATE_PAGES)
     job.tier_reached = 0
 
@@ -102,7 +105,9 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
         async with async_playwright() as p:
             browser = await p.chromium.launch(args=["--no-sandbox"])
             try:
-                exploration = await explore_visually(browser, company.website_url)
+                exploration = await explore_visually(
+                    browser, company.website_url, api_key=resolved_key.api_key
+                )
             finally:
                 await browser.close()
         job.tier_reached = 2
@@ -126,6 +131,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
                 tokens_in=exploration.tokens_in,
                 tokens_out=exploration.tokens_out,
                 cost_usd=float(deep_cost),
+                billed_to=resolved_key.billed_to,
             )
 
     job.pages_fetched = len(rendered)
@@ -155,7 +161,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     await db.commit()
     await set_tenant_scope(db, job.tenant_id)  # transaction-local — reset after the commit above
 
-    result = await extract_profile(rendered)
+    result = await extract_profile(rendered, api_key=resolved_key.api_key)
     if result is not None:
         job.tokens_in += result.tokens_in
         job.tokens_out += result.tokens_out
@@ -178,6 +184,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
             tokens_in=result.tokens_in,
             tokens_out=result.tokens_out,
             cost_usd=float(profile_cost),
+            billed_to=resolved_key.billed_to,
         )
 
         company.overview = result.profile.overview

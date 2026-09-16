@@ -106,12 +106,16 @@ def _build_prompt(pages: list[RenderedPage]) -> str:
     )
 
 
-async def extract_profile(pages: list[RenderedPage]) -> ExtractionResult | None:
-    """Run the extraction call, or `None` if there was nothing worth sending the model."""
+async def extract_profile(
+    pages: list[RenderedPage], *, api_key: str | None = None
+) -> ExtractionResult | None:
+    """Run the extraction call, or `None` if there was nothing worth sending the model. `api_key`
+    is the resolved key from `app.services.llm.resolve_anthropic_key` — the platform's own when
+    omitted, e.g. in a test that doesn't care which key is used."""
     if not pages:
         return None
     settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None)
+    client = anthropic.AsyncAnthropic(api_key=api_key or settings.anthropic_api_key or None)
     response = await client.messages.parse(
         model=MODEL,
         max_tokens=MAX_OUTPUT_TOKENS,

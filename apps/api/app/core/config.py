@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # Platform-paid LLM key for profiling. Read from the environment only; never persisted.
     anthropic_api_key: str = Field(default="")
 
+    # Platform-paid Browser Use Cloud key (docs/PLAN.md §13) — the same platform/BYOK split as
+    # the Anthropic key above.
+    browser_use_api_key: str = Field(default="")
+
+    # Base64-encoded 256-bit key wrapping every workspace-registered credential's own data key
+    # (see app/core/crypto.py) — never the credential ciphertext itself, so rotating this only
+    # means rewrapping data keys, not re-encrypting every secret.
+    master_key: str = Field(default="")
+
     # The self-hosted text-embeddings-inference service (Qwen3-Embedding-0.6B, 1024 dimensions —
     # see docs/PLAN.md §1). Not a tenant-configurable credential: every tenant embeds through the
     # same model, so the vector space stays comparable across the whole platform.

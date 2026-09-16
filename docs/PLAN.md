@@ -364,3 +364,109 @@ above the composer for scoping a question.
 | 9 | Conversations/messages, retrieval + streamed generation with citations, chat quota, chat UI | 1–2 wk |
 
 Each phase is its own branch and pull request, as before.
+
+---
+
+# Part 3 — a workspace's own chat model, on any of four providers
+
+Phase 7 let a workspace bring its own Anthropic key; Phase 9 built chat on it. Part 3 opens chat
+to a workspace's own choice of provider *and* model — Anthropic, OpenAI, Gemini, or Nebius — on its
+own key. One phase: it's one cohesive change (a provider seam under chat, three more credential
+kinds, one settings choice), about the size of Phase 7.
+
+## 16. Decisions
+
+- **Chat only.** Extraction and the visual agent stay on Anthropic: they depend on
+  `client.messages.parse` structured output and on vision, neither of which is portable across
+  these four providers without a per-provider rewrite. Chat is plain streamed text with a system
+  prompt — the one model call in this app that genuinely is provider-agnostic. Phase 7's
+  Anthropic key keeps funding scraping exactly as before; this only changes which key and model
+  answer a chat message.
+- **Two adapters, not four.** Anthropic keeps its native SDK. OpenAI, Gemini, and Nebius all speak
+  OpenAI's chat-completions protocol — OpenAI natively, Gemini through its OpenAI-compatible
+  endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/`), Nebius through
+  `https://api.studio.nebius.com/v1/` — so one adapter on the `openai` SDK covers all three by
+  `base_url`. Streamed token usage comes back via `stream_options={"include_usage": True}`; where a
+  provider omits it on a streamed reply, usage is recorded as unknown (zeros), never guessed. If
+  Gemini's compatibility endpoint ever proves too partial for what chat needs, the fallback is a
+  native `google-genai` adapter behind the same protocol — a third adapter, not a redesign.
+- **The model is the workspace's choice, validated on save.** A provider alone isn't enough: the
+  workspace names the model id it wants (`gpt-5`, `gemini-2.5-pro`, a Nebius-hosted Llama, …).
+  Saving that choice makes one minimal call *with that model* on the workspace's key, so a
+  mistyped model id or a key without access to it fails at settings time, not on the next chat
+  message. The UI suggests a short default list per provider but accepts free text — provider
+  model catalogues change faster than this app will.
+- **Own key means own bill.** A workspace chatting on its own key — any provider — is exempt from
+  `chat_messages_per_month`, the same rule Phase 7 set for Anthropic. Usage is still metered
+  (tokens, `billed_to = tenant`, the model id). Cost is recorded only where this app has a rate
+  card — the platform's own Anthropic rate — and as `0` for a tenant-billed run on another
+  provider: an unknown cost is recorded as unknown, not estimated from a made-up rate.
+- **Anthropic on the platform key stays the default.** A workspace that registers nothing keeps
+  chatting exactly as today, on `claude-sonnet-5` and the platform key, under quota. Nothing about
+  this phase changes what an unconfigured workspace sees.
+
+## 17. Data model changes
+
+```
+credential_provider (enum)  + OPENAI, GEMINI, NEBIUS
+tenants.settings (jsonb)    + chat: {provider: anthropic|openai|gemini|nebius, model: str}
+```
+
+No new tables. `tenant_credentials` already stores one envelope-encrypted key per
+`(tenant_id, provider)`; three more provider values is all the storage this needs. The chat
+choice lives next to `scrape_provider` in `tenants.settings`, read through a `Tenant.chat_model`
+property that falls back to `(anthropic, claude-sonnet-5)` when unset — the same shape Phase 8
+gave `scrape_provider`.
+
+## 18. Phase 10 — workspace chat model
+
+**Provider seam.** `app/llm/` — a `ChatProvider` protocol with one method, `stream(system,
+messages, model)`, yielding text chunks and finishing with `(tokens_in, tokens_out)`; two
+implementations, `AnthropicChat` (the existing streaming code lifted out of the chat router
+unchanged) and `OpenAICompatibleChat` (the `openai` SDK, `base_url` per provider, usage from the
+final streamed chunk). `build_chat_provider(provider, api_key, model)` is the only place that
+knows which class or base URL goes with which `Provider` value. The chat router calls the
+protocol, never an SDK.
+
+**Key resolution.** `services/llm.py::resolve_chat_model(db, tenant)` returns
+`(provider, model, api_key, billed_to)`: the workspace's saved chat choice on its own key for that
+provider, or the Anthropic default on the workspace's own Anthropic key if it has one, else the
+Anthropic default on the platform key. `assert_within_chat_quota` short-circuits whenever the
+resolved key is the tenant's own, whichever provider it belongs to — generalizing Phase 7's
+Anthropic-only check.
+
+**Credentials.** `Provider` gains `OPENAI`, `GEMINI`, `NEBIUS`. Validation on save for each is a
+one-token chat completion on that provider's compatibility endpoint — the same "prove the key
+authenticates, do no real work" rule Phase 7's Anthropic check follows. Existing
+`PUT/GET/DELETE /tenants/current/credentials` need no new routes, only the enum.
+
+**Settings.** `PUT /tenants/current/chat-model` with `{provider, model}` (admin/owner): refuses a
+provider the workspace has no key for (Anthropic excepted — the platform key can carry it), then
+validates the model with a one-token call on the resolved key before writing
+`settings.chat.{provider,model}`. `TenantResponse` gains `chat_provider` and `chat_model`.
+Audited, like the scrape-provider switch.
+
+**UI.** `/settings/keys` grows three rows (OpenAI, Gemini, Nebius) in the existing keys list and
+a "Chat model" section beneath the scrape-provider one: a provider dropdown listing only providers
+the workspace holds a key for (plus Anthropic), a model input pre-filled with that provider's
+suggested default, and a save that surfaces the validation error inline. The `/chat` page needs no
+change — which model answers is a workspace setting, not a per-message choice.
+
+**Metering.** `record_usage_event` already takes `model` and `billed_to`; a chat run on a
+non-Anthropic provider passes the provider's model id, `cost_usd=0`, and its reported tokens.
+The existing `CHAT` usage kind and `chat_messages_per_month` ceiling are unchanged.
+
+**Tests.** The OpenAI-compatible adapter against a fake transport (streamed chunks, usage in the
+final chunk, usage absent); provider construction picking the right base URL per `Provider`;
+credential validation for the three new providers (success, rejection); `resolve_chat_model`'s
+three-way fallback; the chat-model settings endpoint (key-required, model validation failure,
+admin-only); and the chat router streaming through a non-Anthropic provider end to end with a
+fake client, recording `billed_to = tenant` and `cost_usd = 0`.
+
+## 19. Phases
+
+| Phase | Deliverable | Est. |
+|---|---|---|
+| 10 | `ChatProvider` seam with Anthropic + OpenAI-compatible adapters, OpenAI/Gemini/Nebius credentials, per-workspace chat model choice validated on save, quota exemption generalized to any own key, settings UI | 1 wk |
+
+One branch, one pull request, as before.

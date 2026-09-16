@@ -32,6 +32,9 @@ export default async function TenantLayout({
             <Link href="/catalogue" className="hover:text-zinc-900">
               Catalogue
             </Link>
+            <Link href="/settings/keys" className="hover:text-zinc-900">
+              API keys
+            </Link>
           </nav>
         </div>
         <a href={ROOT_URL} className="text-sm text-zinc-500 hover:text-zinc-700">

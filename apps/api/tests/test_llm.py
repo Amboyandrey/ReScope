@@ -6,6 +6,7 @@ messages actually run on.
 import uuid
 from types import SimpleNamespace
 
+import anthropic
 import httpx
 import openai
 import pytest
@@ -14,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
-from app.core.errors import CredentialNotFound
-from app.llm import OPENAI_COMPATIBLE_BASE_URLS, build_chat_provider
+from app.core.errors import CredentialNotFound, CredentialValidationFailed
+from app.llm import OPENAI_COMPATIBLE_BASE_URLS, build_chat_provider, filter_chat_models, list_provider_models
 from app.llm.anthropic_chat import AnthropicChat
 from app.llm.openai_compatible_chat import OpenAICompatibleChat
 from app.models import Provider, Tenant, UsageBilledTo, User
@@ -225,3 +226,80 @@ async def test_chat_model_response_fields_default_before_any_provider_is_chosen(
     tenant = (await create_tenant(client)).json()
     assert tenant["chat_provider"] == "anthropic"
     assert tenant["chat_model"] == "claude-sonnet-5"
+
+
+def test_filter_chat_models_drops_known_non_chat_openai_models() -> None:
+    ids = ["gpt-4o", "gpt-4o-mini", "text-embedding-3-small", "whisper-1", "dall-e-3"]
+    assert filter_chat_models(Provider.OPENAI, ids) == sorted(["gpt-4o", "gpt-4o-mini"])
+
+
+def test_filter_chat_models_drops_known_non_chat_gemini_models() -> None:
+    ids = ["gemini-2.5-pro", "gemini-2.5-flash", "text-embedding-004", "imagen-3.0-generate-001"]
+    assert filter_chat_models(Provider.GEMINI, ids) == sorted(["gemini-2.5-pro", "gemini-2.5-flash"])
+
+
+def test_filter_chat_models_drops_nebius_embedding_models() -> None:
+    ids = ["meta-llama/Llama-3.3-70B-Instruct", "BAAI/bge-en-icl-embed"]
+    assert filter_chat_models(Provider.NEBIUS, ids) == ["meta-llama/Llama-3.3-70B-Instruct"]
+
+
+def test_filter_chat_models_keeps_everything_for_anthropic_and_custom() -> None:
+    ids = ["claude-sonnet-5", "claude-haiku-4-5"]
+    assert filter_chat_models(Provider.ANTHROPIC, ids) == sorted(ids)
+    assert filter_chat_models(Provider.CUSTOM, ["my-weird-model-name"]) == ["my-weird-model-name"]
+
+
+async def test_list_provider_models_for_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def gen():  # noqa: ANN202
+        for model_id in ["claude-sonnet-5", "claude-haiku-4-5"]:
+            yield SimpleNamespace(id=model_id)
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(models=SimpleNamespace(list=lambda: gen()))
+    )
+    ids = await list_provider_models(Provider.ANTHROPIC, "sk-ant-x")
+    assert set(ids) == {"claude-sonnet-5", "claude-haiku-4-5"}
+
+
+async def test_list_provider_models_surfaces_anthropics_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_error() -> None:
+        request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
+        response = httpx.Response(401, request=request)
+        raise anthropic.APIStatusError("invalid key", response=response, body=None)
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(models=SimpleNamespace(list=raise_error))
+    )
+    with pytest.raises(CredentialValidationFailed):
+        await list_provider_models(Provider.ANTHROPIC, "sk-ant-bad")
+
+
+async def test_list_provider_models_for_openai_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def gen():  # noqa: ANN202
+        for model_id in ["gpt-4o", "text-embedding-3-small"]:
+            yield SimpleNamespace(id=model_id)
+
+    monkeypatch.setattr(
+        openai, "AsyncOpenAI", lambda **_: SimpleNamespace(models=SimpleNamespace(list=lambda: gen()))
+    )
+    ids = await list_provider_models(Provider.OPENAI, "sk-openai-x")
+    assert set(ids) == {"gpt-4o", "text-embedding-3-small"}
+
+
+async def test_list_provider_models_uses_the_given_base_url_for_custom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def gen():  # noqa: ANN202
+        yield SimpleNamespace(id="my-model")
+
+    class _FakeOpenAI:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["base_url"] = base_url
+            self.models = SimpleNamespace(list=lambda: gen())
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", _FakeOpenAI)
+    ids = await list_provider_models(Provider.CUSTOM, "key", base_url="https://my-server.example.com/v1")
+    assert ids == ["my-model"]
+    assert captured["base_url"] == "https://my-server.example.com/v1"

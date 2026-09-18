@@ -232,8 +232,11 @@ export default function ApiKeysPage() {
         <section className="mt-10 border-t border-zinc-200 pt-6">
           <h2 className="text-lg font-semibold">Deep-scan provider</h2>
           <p className="mt-1 text-sm text-zinc-600">
-            Which agent a deep scan uses to explore a site — the built-in agent, or Browser Use
-            Cloud once a Browser Use key is registered above.
+            Which agent a deep scan uses to explore a site — the built-in agent (needs an
+            Anthropic key), or Browser Use Cloud once a Browser Use key is registered above. If
+            this workspace has no Anthropic key at all — its own or the platform&apos;s — and
+            Browser Use Cloud is selected, Browser Use also profiles fast scans, not just deep
+            ones, since it&apos;s the only extractor available.
           </p>
           <div className="mt-3 flex flex-col gap-2">
             <label className="flex items-center gap-2 text-sm">

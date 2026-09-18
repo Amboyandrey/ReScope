@@ -23,6 +23,9 @@ _MAX_BODY_BYTES = 2 * 1024 * 1024
 
 # Path segments and anchor words that mark a page as worth Tier 1's attention. Order doesn't
 # matter — every match on a candidate URL adds one point, so a URL matching several counts more.
+# Stemmed (e.g. "capabilit" over "capability") so a plural or a nearby inflection still matches —
+# "technolog" over "technology" for the same reason: "technology" itself isn't a substring of
+# "technologies", so the un-stemmed form silently missed the plural.
 _KEYWORDS = [
     "about",
     "product",
@@ -32,8 +35,12 @@ _KEYWORDS = [
     "capabilit",
     "case-stud",
     "customer",
-    "technology",
+    "technolog",
     "platform",
+    "innovation",
+    "portfolio",
+    "catalog",  # matches "catalog" and "catalogue"
+    "offering",
     "partner",
     "company",
     "what-we-do",

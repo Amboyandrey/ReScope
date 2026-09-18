@@ -3,13 +3,16 @@ even created, so a rejected request never leaves an orphaned row behind."""
 
 import uuid
 
+import httpx
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
 from app.core.errors import QuotaExceeded
-from app.models import ScrapeMode, Tenant, UsageKind
+from app.models import Provider, ScrapeMode, Tenant, UsageKind, User
+from app.services.credentials import set_credential
 from app.services.platform_settings import set_scraping_paused
 from app.services.quotas import assert_within_quota
 from app.services.usage import record_usage_event
@@ -167,6 +170,60 @@ async def test_deep_quota_is_shared_across_both_tier_2_providers(
     # A single fast-mode run is still counted only against `profiles_per_month`, unaffected by
     # the now-exhausted deep ceiling — confirms the single-kind branch wasn't broken along the way.
     await assert_within_quota(db, tenant=tenant, mode=ScrapeMode.FAST)
+
+
+async def test_own_browser_use_key_exempts_a_browser_use_cloud_tenant_from_the_quota(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tenant with no Anthropic key at all, on `browser_use_cloud` with its own Browser Use key,
+    is exempt from `profiles_per_month` the same way an Anthropic-BYOK tenant is — the platform
+    isn't paying for either kind of call. Exercised on FAST mode, since Browser Use now also runs
+    FAST jobs for a workspace with no Anthropic key (see `app/scraping/pipeline.py`)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json={})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(handler)}),
+    )
+
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    await set_tenant_scope(db, tenant_id)
+    user_id = await db.scalar(select(User.id))
+    assert user_id is not None
+    await set_credential(
+        db, tenant_id=tenant_id, created_by=user_id, provider=Provider.BROWSER_USE, api_key="bu-test-key"
+    )
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+    tenant.settings = {**tenant.settings, "scrape_provider": "browser_use_cloud"}
+    await db.commit()
+    await set_tenant_scope(db, tenant_id)
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+
+    # Free plan's profiles_per_month is 10 — fill it up; a BYOK tenant should sail past it.
+    for _ in range(10):
+        await record_usage_event(
+            db,
+            tenant_id=tenant_id,
+            job_id=None,
+            kind=UsageKind.PROFILE,
+            model="claude-sonnet-5",
+            tokens_in=100,
+            tokens_out=50,
+            cost_usd=0.01,
+        )
+    await db.commit()
+    await set_tenant_scope(db, tenant_id)
+
+    await assert_within_quota(db, tenant=tenant, mode=ScrapeMode.FAST)  # does not raise
 
 
 async def test_company_creation_is_rejected_while_scraping_is_paused(

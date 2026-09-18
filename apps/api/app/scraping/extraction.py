@@ -7,7 +7,7 @@ that's already been rendered and cleaned, not a task that needs a frontier model
 """
 
 import anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import get_settings
 from app.models.company import CompanyType
@@ -62,6 +62,16 @@ class ExtractedFacts(BaseModel):
     founded_year: int | None = None
     socials: dict[str, str] = Field(default_factory=dict, description="e.g. {'linkedin': 'https://...'}")
 
+    @field_validator("socials", mode="before")
+    @classmethod
+    def _null_socials_means_none_found(cls, value: object) -> object:
+        """Browser Use Cloud's own model (`app/scraping/browser_use_cloud.py`) has been observed
+        sending an explicit JSON `null` here — the same "nothing here" a scalar fact would use —
+        even though the schema asks for an object. `default_factory` only covers the field being
+        *omitted*, not set to `null`, so without this an otherwise-successful task fails
+        `model_validate_json` entirely over one empty field."""
+        return {} if value is None else value
+
 
 class ExtractedProfile(BaseModel):
     """What one extraction call produces from a company's own pages."""
@@ -102,6 +112,13 @@ def _build_prompt(pages: list[RenderedPage]) -> str:
         "least one evidence entry citing the exact page URL it came from and a short supporting "
         "quote lifted from that page's text. Omit an offering or competency entirely rather than "
         "include it without a real description.\n\n"
+        "If a page lists several individually-named or branded products or technologies (for "
+        "example, cards or tiles each with their own name, like 'TargetHeat' or 'LaserRaster'), "
+        "extract each one as its own separate offering using that real name — never collapse them "
+        "into one generic offering describing the product line, catalogue, or platform as a "
+        "whole. A generic description of the company's own site or process (e.g. 'browse our "
+        "catalogue', 'register as a partner') is not itself a product or service and should be "
+        "omitted unless the company genuinely sells that access or process as an offering.\n\n"
         f"{pages_block}"
     )
 

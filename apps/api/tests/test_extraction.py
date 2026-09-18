@@ -79,6 +79,15 @@ def test_profile_facts_default_to_all_unknown() -> None:
     assert profile.facts.company_type is None
 
 
+def test_facts_accepts_an_explicit_null_socials_as_none_found() -> None:
+    """Browser Use Cloud's own model has been observed sending `"socials": null` rather than
+    omitting the field or sending `{}` when a site's pages state no social links at all —
+    `model_validate_json` (called on its output in `app/scraping/browser_use_cloud.py`) must not
+    reject an otherwise-complete profile over that one field."""
+    facts = ExtractedFacts.model_validate({"socials": None})
+    assert facts.socials == {}
+
+
 async def test_prompt_truncates_to_the_total_character_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(extraction, "MAX_TOTAL_PROMPT_CHARS", 50)
     pages = [_page("https://acme.example/a", "x" * 40), _page("https://acme.example/b", "y" * 40)]

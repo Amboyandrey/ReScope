@@ -8,11 +8,13 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import structlog
 from playwright.async_api import async_playwright
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import set_tenant_scope
+from app.core.errors import NoProfilingProvider
 from app.core.storage import save_screenshot
 from app.models import (
     Company,
@@ -29,6 +31,7 @@ from app.models import (
     Tenant,
     UsageKind,
 )
+from app.scraping.browser_use_cloud import MODEL as BROWSER_USE_MODEL
 from app.scraping.browser_use_cloud import BrowserUseTaskFailed, run_browser_use_task
 from app.scraping.discovery import discover_candidate_urls
 from app.scraping.extraction import MODEL as EXTRACTION_MODEL
@@ -38,8 +41,10 @@ from app.scraping.render import RenderedPage, render_pages
 from app.scraping.visual_agent import MODEL as VISUAL_MODEL
 from app.scraping.visual_agent import explore_visually
 from app.services.embeddings import MODEL_NAME, embed_texts
-from app.services.llm import resolve_anthropic_key, resolve_browser_use_key
+from app.services.llm import ResolvedKey, has_anthropic_key, resolve_anthropic_key, resolve_browser_use_key
 from app.services.usage import record_usage_event
+
+log = structlog.get_logger()
 
 MAX_CANDIDATE_PAGES = 12
 # Pricing at the time this was written — see docs/PLAN.md §5. A config constant, not a live
@@ -80,21 +85,30 @@ def _apply_facts(company: Company, facts: ExtractedFacts) -> None:
     company.socials = facts.socials
 
 
-async def _run_browser_use_deep_mode(
-    db: AsyncSession, *, job: ScrapeJob, company: Company
+async def _run_browser_use(
+    db: AsyncSession, *, job: ScrapeJob, company: Company, resolved: ResolvedKey, fatal: bool
 ) -> tuple[ExtractedProfile | None, list[RenderedPage]]:
-    """Run deep mode through Browser Use Cloud instead of the custom agent. Never raises — no key,
-    an unreachable API, or a failed task all just mean deep mode found nothing extra this run,
-    the same graceful degradation the custom agent's own exploration loop already gives Tier 0/1."""
-    resolved = await resolve_browser_use_key(db, tenant_id=job.tenant_id)
-    if resolved is None:
-        return None, []
-
+    """Run a profiling task through Browser Use Cloud. When Tier 1's own Anthropic extraction can
+    still produce a profile alongside this (`fatal=False` — the ordinary DEEP-mode case, Browser
+    Use as a second Tier 2 provider per docs/PLAN.md §13), a failure here just means deep mode
+    found nothing extra this run, the same graceful degradation Tier 0/1 already gives on their
+    own. When Browser Use is the *only* extractor this workspace has (`fatal=True` — no Anthropic
+    key configured at all, tenant or platform), its failure is the whole job's failure — there's
+    nothing left to fall back to."""
     try:
         result = await run_browser_use_task(
             api_key=resolved.api_key, website_url=company.website_url, domain=company.domain
         )
-    except BrowserUseTaskFailed:
+    except BrowserUseTaskFailed as exc:
+        log.warning(
+            "browser_use_task_failed",
+            tenant_id=str(job.tenant_id),
+            job_id=str(job.id),
+            fatal=fatal,
+            error=str(exc),
+        )
+        if fatal:
+            raise
         return None, []
 
     if result.steps:
@@ -105,7 +119,7 @@ async def _run_browser_use_deep_mode(
             tenant_id=job.tenant_id,
             job_id=job.id,
             kind=UsageKind.BROWSER_USE_RUN,
-            model="browser-use-llm",
+            model=BROWSER_USE_MODEL,
             tokens_in=0,
             tokens_out=0,
             cost_usd=float(cost),
@@ -126,6 +140,22 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     assert tenant is not None  # the job's own tenant, always present for an in-flight scrape
 
     resolved_key = await resolve_anthropic_key(db, tenant_id=job.tenant_id)
+    anthropic_available = await has_anthropic_key(db, tenant_id=job.tenant_id)
+    uses_browser_use_cloud = tenant.scrape_provider == ScrapeProvider.BROWSER_USE_CLOUD
+    browser_use_key = (
+        await resolve_browser_use_key(db, tenant_id=job.tenant_id) if uses_browser_use_cloud else None
+    )
+
+    if not anthropic_available and browser_use_key is None:
+        # Nothing configured can extract a profile at all — fail now, before rendering pages this
+        # job could never do anything with (a more useful signal than the raw Anthropic SDK error
+        # `extract_profile` would otherwise raise deep into the job).
+        raise NoProfilingProvider()
+
+    # Browser Use Cloud runs as a second Tier 2 provider on every DEEP job that's chosen it
+    # (docs/PLAN.md §13), and — when there's no Anthropic key to run Tier 1 extraction at all —
+    # as the *only* extractor a FAST job on a Browser-Use-only workspace has.
+    run_browser_use = browser_use_key is not None and (job.mode == ScrapeMode.DEEP or not anthropic_available)
 
     candidate_urls = await discover_candidate_urls(company.website_url, max_candidates=MAX_CANDIDATE_PAGES)
     job.tier_reached = 0
@@ -134,7 +164,7 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     if candidate_urls:
         rendered = await render_pages(candidate_urls)
         job.tier_reached = 1
-    elif job.mode == ScrapeMode.FAST:
+    elif job.mode == ScrapeMode.FAST and not run_browser_use:
         # Nothing to read and nowhere for a fast job to escalate to — done, nothing extracted.
         job.status = ScrapeStatus.DONE
         job.finished_at = datetime.now(UTC)
@@ -145,8 +175,11 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     cloud_profile: ExtractedProfile | None = None
     evidence_pages: list[RenderedPage] = list(rendered)
 
-    if job.mode == ScrapeMode.DEEP and tenant.scrape_provider == ScrapeProvider.BROWSER_USE_CLOUD:
-        cloud_profile, cloud_pages = await _run_browser_use_deep_mode(db, job=job, company=company)
+    if run_browser_use:
+        assert browser_use_key is not None  # implied by `run_browser_use`
+        cloud_profile, cloud_pages = await _run_browser_use(
+            db, job=job, company=company, resolved=browser_use_key, fatal=not anthropic_available
+        )
         evidence_pages = evidence_pages + cloud_pages
         job.tier_reached = 2
     elif job.mode == ScrapeMode.DEEP:
@@ -213,7 +246,10 @@ async def run_scrape_job(db: AsyncSession, *, job: ScrapeJob, company: Company) 
     await db.commit()
     await set_tenant_scope(db, job.tenant_id)  # transaction-local — reset after the commit above
 
-    result = await extract_profile(rendered, api_key=resolved_key.api_key)
+    # Only ever called with an Anthropic key actually configured — `anthropic_available` is what
+    # the upfront check above guaranteed one of, and this is the branch that needs it; a
+    # Browser-Use-only workspace's profile comes entirely from `cloud_profile` instead.
+    result = await extract_profile(rendered, api_key=resolved_key.api_key) if anthropic_available else None
     if result is not None:
         job.tokens_in += result.tokens_in
         job.tokens_out += result.tokens_out

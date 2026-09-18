@@ -56,15 +56,23 @@ class ExplorationResult:
 def _prompt(step: int, max_steps: int) -> str:
     return (
         f"This is step {step + 1} of at most {max_steps} exploring a company's website to find "
-        "its products, services, and competencies. Some of that information may be hidden behind "
-        "tabs, accordions, dropdown menus, or a 'load more' button that only appear after "
-        "interacting with the page — that's what you're looking for here, not information "
-        "already visible in plain text.\n\n"
-        "Look at the screenshot and choose ONE action: click a specific point that looks like it "
-        "would reveal more product/service/competency information, scroll down to see more of "
-        "the page, navigate to a specific visible link's URL, or 'done' once you don't expect "
-        "another action to reveal anything new. Coordinates are pixels from the top-left of the "
-        "screenshot you were given."
+        "its products, services, and competencies. Follow this priority: FIRST, if the current "
+        "screenshot doesn't obviously show the bottom of the page, scroll down — a page can keep "
+        "revealing more content (extra rows of a grid, more sections) well past what's visible "
+        "right now, and a heading like 'Explore our portfolio' or 'Our products' specifically "
+        "means a grid or list of individually-named items follows, very likely continuing further "
+        "than one screen. Don't click anything on this page, or navigate away from it, until "
+        "you're confident scrolling has nothing left to reveal here. ONLY once that's true should "
+        "you click a tab, accordion, dropdown, or 'load more' button that only appears after "
+        "interacting with the page, or a primary navigation item (e.g. 'Products', 'Innovation', "
+        "'Solutions', 'Portfolio') — those are often exactly where a dedicated product or "
+        "technology catalogue lives, separate from whatever the homepage already shows, so still "
+        "visit them once you've exhausted the page you're on.\n\n"
+        "Look at the screenshot and choose ONE action: scroll down to see more of the current "
+        "page, click a specific point that looks like it would reveal more product/service/"
+        "competency information, navigate to a specific visible link's URL, or 'done' once you "
+        "don't expect another action to reveal anything new. Coordinates are pixels from the "
+        "top-left of the screenshot you were given."
     )
 
 

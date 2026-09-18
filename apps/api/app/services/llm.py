@@ -36,6 +36,18 @@ async def has_own_anthropic_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> bo
     return credential is not None
 
 
+async def has_anthropic_key(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
+    """Whether an Anthropic call can actually run for this tenant right now — its own registered
+    key, or a platform key that's actually configured. Unlike `resolve_anthropic_key`, which
+    always hands back *a* key (an empty string when nothing at all is configured, so a chat call
+    fails at the provider itself rather than here — see `resolve_chat_model`), the scrape
+    pipeline uses this to decide up front, before rendering anything, whether Tier 1 extraction
+    or the custom Tier 2 agent can run at all."""
+    if await has_own_anthropic_key(db, tenant_id=tenant_id):
+        return True
+    return bool(get_settings().anthropic_api_key)
+
+
 @dataclass(frozen=True)
 class ResolvedChatModel:
     provider: Provider

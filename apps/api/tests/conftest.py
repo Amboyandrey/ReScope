@@ -59,6 +59,15 @@ def _ensure_test_master_key() -> None:
     os.environ.setdefault("MASTER_KEY", "KrDfsQpVP8DpASrl+dxgcbvaivbQotdAQmC2Y8v0O5o=")
 
 
+def _ensure_test_anthropic_key() -> None:
+    """A fixed, obviously-fake platform key so the scrape pipeline's own tests get the same
+    "an Anthropic key is configured" default a normal deployment has (docker-compose's own
+    `ANTHROPIC_API_KEY`) without mocking Anthropic's SDK in every test. The handful of tests about
+    the "no Anthropic key at all" / Browser-Use-only paths (`app/services/llm.has_anthropic_key`)
+    monkeypatch `get_settings().anthropic_api_key` back to `""` for themselves."""
+    os.environ.setdefault("ANTHROPIC_API_KEY", "sk-ant-test-platform-key")
+
+
 async def _ensure_database_exists(url: str) -> None:
     """Create the `_test` database if it doesn't exist yet (Postgres has no CREATE DATABASE IF NOT EXISTS)."""
     scheme, netloc, path, _, _ = urlsplit(url)
@@ -78,6 +87,7 @@ async def _ensure_database_exists(url: str) -> None:
 _force_test_database_urls()
 _force_test_redis_db_index()
 _ensure_test_master_key()
+_ensure_test_anthropic_key()
 asyncio.run(_ensure_database_exists(os.environ["DATABASE_URL"]))
 
 # Imported only after the overrides above: Settings is lru_cache'd on first call.

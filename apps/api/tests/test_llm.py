@@ -14,6 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.db import set_tenant_scope
 from app.core.errors import CredentialNotFound, CredentialValidationFailed
 from app.llm import OPENAI_COMPATIBLE_BASE_URLS, build_chat_provider, filter_chat_models, list_provider_models
@@ -21,7 +22,7 @@ from app.llm.anthropic_chat import AnthropicChat
 from app.llm.openai_compatible_chat import OpenAICompatibleChat
 from app.models import Provider, Tenant, UsageBilledTo, User
 from app.services.credentials import set_credential
-from app.services.llm import has_own_chat_key, resolve_chat_model
+from app.services.llm import has_anthropic_key, has_own_chat_key, resolve_chat_model
 from tests.helpers import create_tenant, signup
 
 
@@ -219,6 +220,55 @@ async def test_resolve_chat_model_raises_when_the_configured_provider_has_no_key
 
     with pytest.raises(CredentialNotFound):
         await resolve_chat_model(db, tenant=tenant)
+
+
+async def test_has_anthropic_key_true_with_only_a_platform_key(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "sk-ant-platform")
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    assert await has_anthropic_key(db, tenant_id=tenant_id)
+
+
+async def test_has_anthropic_key_true_with_only_the_tenants_own_key(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def mock_create(**_: object) -> object:
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda **_: SimpleNamespace(messages=SimpleNamespace(create=mock_create))
+    )
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    await set_tenant_scope(db, tenant_id)
+    await set_credential(
+        db,
+        tenant_id=tenant_id,
+        created_by=await _user_id(db),
+        provider=Provider.ANTHROPIC,
+        api_key="sk-ant-own",
+    )
+
+    assert await has_anthropic_key(db, tenant_id=tenant_id)
+
+
+async def test_has_anthropic_key_false_with_neither(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    await signup(client)
+    tenant_data = (await create_tenant(client)).json()
+    tenant_id = uuid.UUID(tenant_data["id"])
+    await set_tenant_scope(db, tenant_id)
+
+    assert not await has_anthropic_key(db, tenant_id=tenant_id)
 
 
 async def test_chat_model_response_fields_default_before_any_provider_is_chosen(client: AsyncClient) -> None:

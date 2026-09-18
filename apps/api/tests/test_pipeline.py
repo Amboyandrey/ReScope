@@ -17,7 +17,9 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.db import set_tenant_scope
+from app.core.errors import NoProfilingProvider
 from app.models import (
     Company,
     CompanyType,
@@ -36,7 +38,7 @@ from app.models import (
 )
 from app.models.embedding import EMBEDDING_DIMENSIONS
 from app.scraping import pipeline
-from app.scraping.browser_use_cloud import BrowserUseResult
+from app.scraping.browser_use_cloud import BrowserUseResult, BrowserUseTaskFailed
 from app.scraping.extraction import (
     ExtractedCompetency,
     ExtractedEvidence,
@@ -540,3 +542,123 @@ async def test_deep_mode_dispatches_to_browser_use_cloud_and_merges_profiles(
     screenshot_pages = [p for p in pages if p.screenshot_key is not None]
     assert len(screenshot_pages) == 1
     assert (tmp_path / screenshot_pages[0].screenshot_key).read_bytes() == b"cloud-screenshot-bytes"
+
+
+async def _select_browser_use_provider(db: AsyncSession, *, tenant_id: uuid.UUID) -> None:
+    await set_tenant_scope(db, tenant_id)
+    tenant = await db.get(Tenant, tenant_id)
+    assert tenant is not None
+    tenant.settings = {**tenant.settings, "scrape_provider": "browser_use_cloud"}
+    await db.commit()
+    await set_tenant_scope(db, tenant_id)
+
+
+async def test_fast_job_uses_browser_use_when_no_anthropic_key_exists(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A workspace with no Anthropic key at all — its own or the platform's — but a registered
+    Browser Use key and `browser_use_cloud` selected as its scrape provider still produces a
+    profile on an ordinary FAST job: Browser Use Cloud stands in for Tier 1 extraction entirely,
+    `extract_profile` is never called, and the job still reaches tier 2 and completes."""
+    from app.core import storage as storage_module
+
+    monkeypatch.setattr(storage_module.settings, "storage_dir", str(tmp_path))
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    company, job = await _create_company(client, db, mode="fast")
+    await _select_browser_use_provider(db, tenant_id=company.tenant_id)
+
+    cloud_page = RenderedPage(
+        url="https://example.com",
+        final_url="https://example.com",
+        status_code=None,
+        markdown="",
+        content_hash="cloudhash",
+        screenshot=b"cloud-screenshot-bytes",
+    )
+    cloud_result = BrowserUseResult(
+        profile=ExtractedProfile(
+            overview="Acme, found entirely by Browser Use.", offerings=[], competencies=[]
+        ),
+        pages=[cloud_page],
+        steps=3,
+    )
+
+    extract_profile_mock = AsyncMock()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=[]))
+        mp.setattr(pipeline, "extract_profile", extract_profile_mock)
+        mp.setattr(
+            pipeline,
+            "resolve_browser_use_key",
+            AsyncMock(return_value=ResolvedKey(api_key="bu-test-key", billed_to=UsageBilledTo.PLATFORM)),
+        )
+        mp.setattr(pipeline, "run_browser_use_task", AsyncMock(return_value=cloud_result))
+        await pipeline.run_scrape_job(db, job=job, company=company)
+        await db.commit()
+
+    extract_profile_mock.assert_not_called()
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed_company = await db.get(Company, company.id)
+    refreshed_job = await db.get(ScrapeJob, job.id)
+    assert refreshed_company is not None and refreshed_job is not None
+    assert refreshed_company.profile_status == ProfileStatus.DONE
+    assert refreshed_company.overview == "Acme, found entirely by Browser Use."
+    assert refreshed_job.status == ScrapeStatus.DONE
+    assert refreshed_job.tier_reached == 2
+
+    events = list((await db.scalars(select(UsageEvent).where(UsageEvent.job_id == job.id))).all())
+    assert {e.kind for e in events} == {UsageKind.BROWSER_USE_RUN}
+
+
+async def test_fast_job_fails_when_browser_use_is_the_only_provider_and_it_fails(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no Anthropic key at all, a Browser Use failure isn't graceful degradation — it's the
+    whole job's failure, since nothing else on this workspace could have produced a profile."""
+    from app.workers.scrape_company import scrape_company
+
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    company, job = await _create_company(client, db, mode="fast")
+    await _select_browser_use_provider(db, tenant_id=company.tenant_id)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", AsyncMock(return_value=[]))
+        mp.setattr(
+            pipeline,
+            "resolve_browser_use_key",
+            AsyncMock(return_value=ResolvedKey(api_key="bu-test-key", billed_to=UsageBilledTo.PLATFORM)),
+        )
+        mp.setattr(
+            pipeline,
+            "run_browser_use_task",
+            AsyncMock(
+                side_effect=BrowserUseTaskFailed("Browser Use rejected the task (HTTP 402): no credit")
+            ),
+        )
+        await scrape_company({}, str(job.id), str(company.tenant_id), str(company.id))
+
+    await set_tenant_scope(db, company.tenant_id)
+    refreshed_company = await db.get(Company, company.id, populate_existing=True)
+    refreshed_job = await db.get(ScrapeJob, job.id, populate_existing=True)
+    assert refreshed_company is not None and refreshed_job is not None
+    assert refreshed_company.profile_status == ProfileStatus.FAILED
+    assert refreshed_job.status == ScrapeStatus.FAILED
+    assert refreshed_job.error is not None and "no credit" in refreshed_job.error
+
+
+async def test_run_scrape_job_raises_when_nothing_can_extract_a_profile(
+    client: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Anthropic key (tenant or platform) and no Browser Use provider configured at all — fails
+    immediately with an actionable message, before discovery or rendering ever run."""
+    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    company, job = await _create_company(client, db, mode="fast")
+
+    discover_mock = AsyncMock(return_value=[])
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "discover_candidate_urls", discover_mock)
+        with pytest.raises(NoProfilingProvider, match="no usable scraping key"):
+            await pipeline.run_scrape_job(db, job=job, company=company)
+
+    discover_mock.assert_not_called()

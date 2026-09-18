@@ -110,6 +110,19 @@ class ScrapingPaused(AppError):
     detail = "Scraping is temporarily paused platform-wide."
 
 
+class NoProfilingProvider(AppError):
+    """Raised at the top of `run_scrape_job` when a tenant has neither an Anthropic key (its
+    own, or the platform's) nor a usable Browser Use Cloud key — nothing in the pipeline could
+    possibly produce a profile, so this fails the job immediately instead of after rendering
+    pages it can never do anything with."""
+
+    status_code = 422
+    detail = (
+        "This workspace has no usable scraping key. Register an Anthropic key, or select "
+        "Browser Use Cloud with a Browser Use key registered, at /settings/keys."
+    )
+
+
 class SuperadminRequired(AppError):
     status_code = 403
     detail = "This action requires platform administrator access."

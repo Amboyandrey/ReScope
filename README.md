@@ -12,6 +12,8 @@ implementation ended up diverging from the original plan in [`docs/PLAN.md`](doc
      profiled, and the CRM layer on top. Not yet captured; see git history for when this comment
      is resolved. -->
 
+![A ReScope company profile: summary, scrape stats, and products each backed by a quoted source URL](docs/screenshots/01-company-profile.png)
+
 ## What it does
 
 - **AI profiling, tiered by how much a site needs.** A no-LLM discovery pass (robots.txt, sitemap,
@@ -47,6 +49,15 @@ implementation ended up diverging from the original plan in [`docs/PLAN.md`](doc
   workspace's scraping and chat until it registers its own; each plan gets its own monthly profile,
   deep-run, and chat-message ceilings, enforced before a job or a chat message ever gets to run,
   with a platform-wide scraping killswitch for the operator.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Catalogue](docs/screenshots/02-catalogue.png) | ![Chat](docs/screenshots/03-chat.png) |
+| **Catalogue** — every tracked company, filterable by country, type, industry, and competency, and searchable by what it does | **Chat** — questions answered from the workspace's own catalogue, optionally scoped to a filter |
+| ![Companies](docs/screenshots/04-companies.png) | |
+| **Companies** — add a company by domain, with an optional deep scan that visually explores tabs and hidden sections | |
 
 ## Architecture
 

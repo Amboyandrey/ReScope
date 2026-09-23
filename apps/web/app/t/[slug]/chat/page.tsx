@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { CatalogueFilterRail } from "@/components/catalogue-filters";
 import { FormError } from "@/components/form-error";
+import { MarkdownMessage } from "@/components/markdown-message";
 import { AuthError } from "@/lib/auth-client";
 import type { CatalogueFilters } from "@/lib/catalogue-client";
 import {
@@ -167,11 +168,17 @@ export default function ChatPage() {
             {messages.map((m) => (
               <div key={m.id} className={m.role === "user" ? "self-end text-right" : "self-start"}>
                 <div
-                  className={`inline-block max-w-md rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-800"
+                  className={`inline-block rounded-lg px-3 py-2 text-sm ${
+                    m.role === "user"
+                      ? "max-w-md whitespace-pre-wrap bg-zinc-900 text-white"
+                      : "max-w-2xl bg-zinc-100 text-zinc-800"
                   }`}
                 >
-                  {m.content || "…"}
+                  {m.role === "user" || !m.content ? (
+                    m.content || "…"
+                  ) : (
+                    <MarkdownMessage content={m.content} />
+                  )}
                 </div>
                 {m.role === "assistant" && <CitationChips citations={m.citations} />}
               </div>

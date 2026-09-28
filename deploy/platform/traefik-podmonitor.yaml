@@ -1,0 +1,12 @@
+# k3s's bundled Traefik already serves Prometheus metrics on its "metrics" port; this scrapes them.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  podMetricsEndpoints:
+    - port: metrics

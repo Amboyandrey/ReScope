@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rescope
+description: ReScope on a single-node k3s cluster, one release per environment namespace.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

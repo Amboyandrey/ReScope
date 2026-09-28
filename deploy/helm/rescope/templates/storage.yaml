@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-scrape-storage
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    # Scrape evidence outlives any one sync; Argo never prunes it.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.scrapeStorage }}

@@ -1,0 +1,57 @@
+{{- if .Values.backup.enabled }}
+# Nightly custom-format pg_dump to S3 via the node's instance role; restore drill in deploy/README.md.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: {{- include "rescope.selector" (dict "root" . "component" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            seccompProfile: { type: RuntimeDefault }
+          initContainers:
+            - name: dump
+              image: {{ .Values.postgres.image }}
+              securityContext: { runAsUser: 999, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+              command: ["sh", "-c", "pg_dump -Fc -h {{ .Release.Name }}-postgres -U rescope rescope > /backup/rescope.dump"]
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: {{ .Values.secret.name }}, key: POSTGRES_PASSWORD } }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          containers:
+            - name: upload
+              image: {{ .Values.backup.awsCliImage }}
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+              command:
+                - sh
+                - -c
+                - aws s3 cp /backup/rescope.dump "s3://{{ required "backup.bucket is required" .Values.backup.bucket }}/{{ .Release.Namespace }}/rescope-$(date -u +%Y%m%dT%H%M%SZ).dump"
+              env:
+                - name: AWS_REGION
+                  value: {{ .Values.backup.region }}
+                - name: HOME
+                  value: /tmp
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
+{{- end }}

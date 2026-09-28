@@ -1,0 +1,27 @@
+# Postgres and Redis accept traffic only from this release's own pods (plus metrics scraping on Redis).
+{{- range $component := list "postgres" "redis" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $component }}
+  labels: {{- include "rescope.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "rescope.selector" (dict "root" $ "component" $component) | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: rescope
+              app.kubernetes.io/instance: {{ $.Release.Name }}
+    {{- if eq $component "redis" }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9121
+    {{- end }}
+{{- end }}

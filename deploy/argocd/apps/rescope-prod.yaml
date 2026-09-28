@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rescope-prod
+  namespace: argocd
+spec:
+  project: rescope
+  source:
+    repoURL: https://github.com/Amboyandrey/ReScope.git
+    targetRevision: main
+    path: deploy/helm/rescope
+    helm:
+      releaseName: rescope
+      ignoreMissingValueFiles: true
+      valueFiles:
+        - ../../environments/prod/values.yaml
+        - ../../environments/prod/sealed-secrets.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rescope-prod
+  syncPolicy:
+    # No automated block: a merged promotion PR still waits for a manual Sync in the Argo UI or CLI.
+    syncOptions: [CreateNamespace=true]

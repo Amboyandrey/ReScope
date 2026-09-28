@@ -1,0 +1,13 @@
+#cloud-config
+# Installs a pinned single-node k3s; Secrets are encrypted at rest and the kubeconfig is root-only.
+package_update: true
+packages:
+  - curl
+
+runcmd:
+  - >-
+    curl -sfL https://get.k3s.io |
+    INSTALL_K3S_VERSION="${k3s_version}" sh -s - server
+    --tls-san ${public_ip}
+    --secrets-encryption
+    --write-kubeconfig-mode 600

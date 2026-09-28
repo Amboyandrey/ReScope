@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 91.8.0
+    helm:
+      valuesObject:
+        # k3s runs these in-process with no scrapeable endpoints; leaving them on only fires false alerts.
+        kubeControllerManager: { enabled: false }
+        kubeScheduler: { enabled: false }
+        kubeProxy: { enabled: false }
+        kubeEtcd: { enabled: false }
+        prometheus:
+          prometheusSpec:
+            # Pick up the PodMonitors and PrometheusRules the ReScope chart and deploy/platform ship.
+            ruleSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            serviceMonitorSelectorNilUsesHelmValues: false
+            # The 30-day availability SLO needs 30 days of history.
+            retention: 31d
+            resources:
+              requests: { cpu: 100m, memory: 512Mi }
+              limits: { memory: 1536Mi }
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources: { requests: { storage: 15Gi } }
+        alertmanager:
+          alertmanagerSpec:
+            secrets: [alertmanager-slack]
+          config:
+            route:
+              receiver: slack
+              group_by: [alertname, namespace]
+              routes:
+                - receiver: "null"
+                  matchers: ['alertname =~ "Watchdog|InfoInhibitor"']
+            receivers:
+              - name: "null"
+              - name: slack
+                slack_configs:
+                  - api_url_file: /etc/alertmanager/secrets/alertmanager-slack/url
+                    send_resolved: true
+                    title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.namespace }})'
+                    text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+        grafana:
+          sidecar:
+            dashboards: { enabled: true, searchNamespace: ALL }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

@@ -1,0 +1,4 @@
+# Copy to backend.hcl; the state bucket is created once by hand (see deploy/README.md).
+bucket = "rescope-tfstate-<account-id>"
+key    = "rescope/terraform.tfstate"
+region = "ap-southeast-1"

@@ -1,0 +1,20 @@
+# Applied from the apps directory so the project itself is reconciled from git too.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: rescope
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  description: ReScope staging and prod
+  sourceRepos:
+    - https://github.com/Amboyandrey/ReScope.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: rescope-staging
+    - server: https://kubernetes.default.svc
+      namespace: rescope-prod
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace

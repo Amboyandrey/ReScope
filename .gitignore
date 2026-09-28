@@ -35,3 +35,10 @@ apps/web/playwright-report/
 
 # Scrape artifacts written outside Docker (apps/api's default STORAGE_DIR)
 apps/api/storage/
+
+# Deploy: plaintext secrets and Terraform local state/config
+deploy/.secrets/
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate*
+deploy/terraform/terraform.tfvars
+deploy/terraform/backend.hcl

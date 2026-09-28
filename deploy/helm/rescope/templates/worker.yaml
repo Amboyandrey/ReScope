@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # Exactly one: the hourly arq cron must not fire from two pods.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{- include "rescope.selector" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rescope.selector" (dict "root" . "component" "worker") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "rescope.podSecurity" (list 1000 1000) | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ include "rescope.image" (dict "root" . "name" "api") }}
+          {{- include "rescope.containerSecurity" . | nindent 10 }}
+          command: ["arq", "app.workers.main.WorkerSettings"]
+          env: {{- include "rescope.appEnv" . | nindent 12 }}
+          # arq --check reads the health key the worker refreshes, so a wedged loop fails it.
+          livenessProbe:
+            exec: { command: ["arq", "--check", "app.workers.main.WorkerSettings"] }
+            initialDelaySeconds: 60
+            periodSeconds: 300
+            timeoutSeconds: 20
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,36 @@
+name: Promote to prod
+
+# Opens a PR moving prod to whatever staging runs now; merging it plus a manual Argo sync is the release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Open promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(yq '.images.api.tag' deploy/environments/staging/values.yaml)
+          [ -n "$sha" ] && [ "$sha" != "null" ] || { echo "staging has no image tag yet"; exit 1; }
+          yq -i ".images.api.tag = \"$sha\" | .images.scraper.tag = \"$sha\" | .images.web.tag = \"$sha-prod\"" \
+            deploy/environments/prod/values.yaml
+          git diff --quiet && { echo "prod already runs $sha"; exit 0; }
+          branch="promote/${sha::7}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "deploy(prod): promote ${sha::7}"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "deploy(prod): promote ${sha::7}" \
+            --body "Moves prod to the images staging currently runs (\`$sha\`). After merging, sync \`rescope-prod\` in Argo CD."

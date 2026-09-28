@@ -1,0 +1,95 @@
+{{- if .Values.monitoring.enabled }}
+{{- $svc := printf "%s-%s-api-8000@kubernetes" .Release.Namespace .Release.Name }}
+{{- $budget := subf 1.0 .Values.monitoring.sloTarget }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "rescope.selector" (dict "root" . "component" "redis") | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+---
+# Availability SLO on API requests as seen at the Traefik ingress; burn-rate windows per the Google SRE workbook.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: rescope-slo-recording
+      rules:
+        {{- range $w := list "5m" "30m" "1h" "6h" }}
+        - record: rescope:api_error_ratio:rate{{ $w }}
+          expr: |
+            sum(rate(traefik_service_requests_total{service="{{ $svc }}",code=~"5.."}[{{ $w }}]))
+            /
+            sum(rate(traefik_service_requests_total{service="{{ $svc }}"}[{{ $w }}]))
+          labels:
+            namespace: {{ $.Release.Namespace }}
+        {{- end }}
+    - name: rescope-alerts
+      rules:
+        - alert: RescopeErrorBudgetFastBurn
+          expr: |
+            rescope:api_error_ratio:rate1h{namespace="{{ .Release.Namespace }}"} > {{ mulf 14.4 $budget }}
+            and
+            rescope:api_error_ratio:rate5m{namespace="{{ .Release.Namespace }}"} > {{ mulf 14.4 $budget }}
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: API is burning its 30-day error budget 14x too fast (about 2 days to exhaustion).
+        - alert: RescopeErrorBudgetSlowBurn
+          expr: |
+            rescope:api_error_ratio:rate6h{namespace="{{ .Release.Namespace }}"} > {{ mulf 6 $budget }}
+            and
+            rescope:api_error_ratio:rate30m{namespace="{{ .Release.Namespace }}"} > {{ mulf 6 $budget }}
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: API is burning its 30-day error budget 6x too fast (about 5 days to exhaustion).
+        - alert: RescopeApiLatencyHigh
+          expr: |
+            histogram_quantile(0.95, sum by (le) (rate(traefik_service_request_duration_seconds_bucket{service="{{ $svc }}"}[10m])))
+            > {{ .Values.monitoring.p95LatencySeconds }}
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: API p95 latency above {{ .Values.monitoring.p95LatencySeconds }}s for 15 minutes (chat SSE streams count too).
+        - alert: RescopeScrapeQueueBacklog
+          expr: redis_key_size{namespace="{{ .Release.Namespace }}",key="scrape_queue"} > {{ .Values.monitoring.scrapeQueueBacklog }}
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: More than {{ .Values.monitoring.scrapeQueueBacklog }} scrape jobs waiting for 30 minutes; the scraper is stuck or undersized.
+        - alert: RescopePodRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[15m]) > 3
+          labels: { severity: warning }
+          annotations:
+            summary: A ReScope container restarted more than 3 times in 15 minutes.
+        {{- if .Values.backup.enabled }}
+        - alert: RescopeBackupStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="{{ .Release.Namespace }}",cronjob="{{ .Release.Name }}-backup"} > 26 * 3600
+          labels: { severity: critical }
+          annotations:
+            summary: No successful Postgres backup in over 26 hours.
+        {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels:
+    {{- include "rescope.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  rescope-{{ .Release.Namespace }}.json: |-
+    {{- .Files.Get "dashboards/rescope.json"
+        | replace "__NAMESPACE__" .Release.Namespace
+        | replace "__SERVICE__" $svc
+        | replace "__SLO__" (toString .Values.monitoring.sloTarget)
+        | nindent 4 }}
+{{- end }}

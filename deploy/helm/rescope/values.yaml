@@ -1,0 +1,89 @@
+# Defaults for every environment; deploy/environments/<env>/values.yaml overrides tags and domain.
+
+domain: rescope.example.com
+
+images:
+  api:
+    repository: ghcr.io/amboyandrey/rescope-api
+    tag: ""
+  scraper:
+    repository: ghcr.io/amboyandrey/rescope-scraper
+    tag: ""
+  # NEXT_PUBLIC_* are baked in at build time, so the web tag is environment-specific (<sha>-<env>).
+  web:
+    repository: ghcr.io/amboyandrey/rescope-web
+    tag: ""
+
+imagePullSecrets: []
+
+# Keys: POSTGRES_PASSWORD, RESCOPE_APP_ROLE_PASSWORD, MASTER_KEY, ANTHROPIC_API_KEY, BROWSER_USE_API_KEY.
+secret:
+  name: rescope-secrets
+  # Filled by deploy/scripts/seal-secrets.sh; empty means the Secret is managed outside the chart.
+  sealedData: {}
+
+postgres:
+  image: pgvector/pgvector:pg16
+  storage: 20Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+redis:
+  image: redis:7-alpine
+  exporterImage: oliver006/redis_exporter:v1.92.1
+  storage: 2Gi
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+embeddings:
+  image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+  model: Qwen/Qwen3-Embedding-0.6B
+  storage: 5Gi
+  resources:
+    requests: { cpu: 250m, memory: 1536Mi }
+    limits: { memory: 3Gi }
+
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 768Mi }
+
+worker:
+  resources:
+    requests: { cpu: 50m, memory: 192Mi }
+    limits: { memory: 512Mi }
+
+scraper:
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits: { memory: 2Gi }
+
+web:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+# Shared by api and scraper; local-path is ReadWriteOnce, which still allows pods on the one node.
+scrapeStorage: 10Gi
+
+ingress:
+  className: traefik
+  clusterIssuer: letsencrypt-dns
+
+backup:
+  enabled: true
+  schedule: "0 3 * * *"
+  bucket: ""
+  region: ap-southeast-1
+  awsCliImage: amazon/aws-cli:2.37.4
+
+monitoring:
+  enabled: true
+  # 99.5% of API requests over 30 days return non-5xx.
+  sloTarget: 0.995
+  p95LatencySeconds: 2
+  scrapeQueueBacklog: 50

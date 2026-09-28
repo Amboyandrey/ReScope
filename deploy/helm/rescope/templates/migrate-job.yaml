@@ -1,0 +1,34 @@
+# Runs `alembic upgrade head` once per image tag, after Postgres is healthy and before the app rolls.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migrate-{{ .Values.images.api.tag | sha256sum | trunc 8 }}
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: {{- include "rescope.selector" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "rescope.podSecurity" (list 1000 1000) | nindent 6 }}
+      containers:
+        - name: migrate
+          image: {{ include "rescope.image" (dict "root" . "name" "api") }}
+          {{- include "rescope.containerSecurity" . | nindent 10 }}
+          command: ["alembic", "upgrade", "head"]
+          env: {{- include "rescope.appEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

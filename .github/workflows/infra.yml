@@ -1,0 +1,61 @@
+name: Infra
+
+on:
+  push:
+    branches: [main]
+    paths: ["deploy/**", ".github/workflows/infra.yml", ".trivyignore.yaml"]
+  pull_request:
+    paths: ["deploy/**", ".github/workflows/infra.yml", ".trivyignore.yaml"]
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v5
+      - name: Lint and validate rendered manifests for both environments
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          for env in staging prod; do
+            args=(-f "deploy/environments/$env/values.yaml" --set images.api.tag=ci,images.scraper.tag=ci,images.web.tag=ci,backup.bucket=ci)
+            helm lint deploy/helm/rescope "${args[@]}"
+            helm template rescope deploy/helm/rescope -n "rescope-$env" "${args[@]}" \
+              | ./kubeconform -strict -summary \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v4
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  misconfig:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v5
+      # The chart needs image tags to render, so Trivy scans its rendered output rather than the templates.
+      - name: Render chart
+        run: |
+          mkdir -p rendered
+          for env in staging prod; do
+            helm template rescope deploy/helm/rescope -n "rescope-$env" -f "deploy/environments/$env/values.yaml" \
+              --set images.api.tag=ci,images.scraper.tag=ci,images.web.tag=ci,backup.bucket=ci > "rendered/$env.yaml"
+          done
+      # Terraform, Kubernetes and Dockerfile misconfiguration scan; accepted risks are justified in .trivyignore.yaml.
+      - uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_IGNOREFILE: .trivyignore.yaml
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"

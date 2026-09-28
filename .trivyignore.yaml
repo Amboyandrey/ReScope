@@ -1,0 +1,14 @@
+# Accepted misconfiguration findings; every entry is scoped to the paths it applies to.
+misconfigurations:
+  - id: AWS-0104
+    paths: ["deploy/terraform/main.tf"]
+    statement: The node must reach container registries, Let's Encrypt, Hugging Face and arbitrary LLM and scrape targets; egress cannot be enumerated.
+  - id: AWS-0132
+    paths: ["deploy/terraform/main.tf"]
+    statement: Backups use SSE-S3; a customer-managed KMS key adds cost and key policy without a threat it mitigates for a single-account demo.
+  - id: DS-0002
+    paths: ["infra/Dockerfile.scraper"]
+    statement: Playwright's Chromium runs as root by design (see the Dockerfile); isolation is its own container with no privilege escalation and a read-only root.
+  - id: DS-0002
+    paths: ["infra/Dockerfile.caddy"]
+    statement: Stock Caddy image binds 80 and 443 as root in the Compose deploy; the Kubernetes path uses Traefik instead.

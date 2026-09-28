@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-embeddings
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "rescope.selector" (dict "root" . "component" "embeddings") | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-embeddings-models
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.embeddings.storage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-embeddings
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  replicas: 1
+  # The model cache is RWO; a surge pod would contend for it, so replace in place.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{- include "rescope.selector" (dict "root" . "component" "embeddings") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rescope.selector" (dict "root" . "component" "embeddings") | nindent 8 }}
+    spec:
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: tei
+          image: {{ .Values.embeddings.image }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          args: ["--model-id", {{ .Values.embeddings.model | quote }}, "--auto-truncate", "--max-batch-tokens", "2048"]
+          ports:
+            - name: http
+              containerPort: 80
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          resources: {{- toYaml .Values.embeddings.resources | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-embeddings-models
+        - name: tmp
+          emptyDir: {}

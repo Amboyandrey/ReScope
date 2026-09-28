@@ -1,0 +1,14 @@
+# prod overrides; image tags are written by .github/workflows/promote.yml, never by hand.
+domain: rescope.example.com
+
+images:
+  api:
+    tag: ""
+  scraper:
+    tag: ""
+  web:
+    tag: ""
+
+backup:
+  # terraform output backups_bucket
+  bucket: ""

@@ -198,6 +198,15 @@ that split needs to be explicit in production when dev gets it for free from two
 The example config targets Cloudflare for the DNS challenge; swap `Dockerfile.caddy`'s `xcaddy`
 line and the `Caddyfile`'s `dns` directive together to use a different provider.
 
+### Kubernetes (AWS + Argo CD)
+
+A second path for staging and prod on Kubernetes. Terraform provisions an AWS node running k3s,
+GitHub Actions builds each image, gates it on a Trivy scan and pushes it to GHCR, and Argo CD
+deploys it via GitOps: automatic on staging, promoted to prod by pull request. Secrets are
+committed only as SealedSecrets; Prometheus alerts on a 99.5% availability SLO with burn-rate
+rules; Postgres is backed up nightly to S3 and restored in a scripted drill. See
+[`deploy/README.md`](deploy/README.md).
+
 ## Security
 
 - Argon2id password hashing; opaque Redis-backed sessions, not JWTs

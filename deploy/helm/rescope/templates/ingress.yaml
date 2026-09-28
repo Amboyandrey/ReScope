@@ -1,0 +1,53 @@
+# One wildcard cert covers the root domain, every tenant subdomain and api.<domain>.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Release.Name }}-tls
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Release.Name }}-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: {{ .Values.ingress.clusterIssuer }}
+  dnsNames:
+    - {{ .Values.domain | quote }}
+    - {{ printf "*.%s" .Values.domain | quote }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - secretName: {{ .Release.Name }}-tls
+      hosts:
+        - {{ .Values.domain | quote }}
+        - {{ printf "*.%s" .Values.domain | quote }}
+  # api.<domain> is listed before the wildcard so it never reaches Next.js, as in infra/Caddyfile.
+  rules:
+    - host: {{ printf "api.%s" .Values.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: {{ .Release.Name }}-api, port: { name: http } }
+    - host: {{ .Values.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: {{ .Release.Name }}-web, port: { name: http } }
+    - host: {{ printf "*.%s" .Values.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: {{ .Release.Name }}-web, port: { name: http } }

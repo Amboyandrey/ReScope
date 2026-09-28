@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-scraper
+  labels: {{- include "rescope.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{- include "rescope.selector" (dict "root" . "component" "scraper") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "rescope.selector" (dict "root" . "component" "scraper") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        # Runs as root by design (see infra/Dockerfile.scraper); isolation comes from its own pod.
+        - name: scraper
+          image: {{ include "rescope.image" (dict "root" . "name" "scraper") }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          env: {{- include "rescope.appEnv" . | nindent 12 }}
+          livenessProbe:
+            exec: { command: ["arq", "--check", "app.workers.scraper.WorkerSettings"] }
+            initialDelaySeconds: 60
+            periodSeconds: 300
+            timeoutSeconds: 20
+          resources: {{- toYaml .Values.scraper.resources | nindent 12 }}
+          volumeMounts:
+            - name: storage
+              mountPath: /app/storage
+            # Chromium needs more shared memory than the container default of 64 MB.
+            - name: dshm
+              mountPath: /dev/shm
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-scrape-storage
+        - name: dshm
+          emptyDir: { medium: Memory, sizeLimit: 512Mi }
+        - name: tmp
+          emptyDir: {}

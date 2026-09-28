@@ -1,0 +1,124 @@
+name: CD
+
+# Runs only after CI passes on main: build, scan, push, then point staging at the new tag.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/amboyandrey
+
+jobs:
+  images:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { image: rescope-api, dockerfile: infra/Dockerfile.api, context: apps/api, env: "" }
+          - { image: rescope-scraper, dockerfile: infra/Dockerfile.scraper, context: apps/api, env: "" }
+          # NEXT_PUBLIC_* are inlined at build time, so each environment gets its own web image.
+          - { image: rescope-web, dockerfile: infra/Dockerfile.web, context: apps/web, env: staging }
+          - { image: rescope-web, dockerfile: infra/Dockerfile.web, context: apps/web, env: prod }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Resolve tag and build args
+        id: meta
+        run: |
+          sha="${{ github.event.workflow_run.head_sha }}"
+          tag="$sha${{ matrix.env && format('-{0}', matrix.env) || '' }}"
+          echo "ref=${REGISTRY}/${{ matrix.image }}:${tag}" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ matrix.env }}" ]; then
+            domain=$(yq '.domain' "deploy/environments/${{ matrix.env }}/values.yaml")
+            {
+              echo "args<<EOF"
+              echo "NEXT_PUBLIC_API_URL=https://api.${domain}"
+              echo "NEXT_PUBLIC_ROOT_DOMAIN=${domain}"
+              echo "NEXT_PUBLIC_ROOT_URL=https://${domain}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ steps.meta.outputs.args }}
+          tags: ${{ steps.meta.outputs.ref }}
+          load: true
+          cache-from: type=gha,scope=${{ matrix.image }}${{ matrix.env }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}${{ matrix.env }}
+
+      # Gate: nothing with a fixable HIGH or CRITICAL CVE reaches the registry.
+      - name: Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.meta.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy.sarif
+
+      - name: Upload scan to code scanning
+        if: always() && hashFiles('trivy.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: ${{ matrix.image }}${{ matrix.env }}
+
+      - name: Push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          build-args: ${{ steps.meta.outputs.args }}
+          tags: ${{ steps.meta.outputs.ref }}
+          push: true
+          cache-from: type=gha,scope=${{ matrix.image }}${{ matrix.env }}
+
+  deploy-staging:
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Argo CD auto-syncs staging, so this commit is the deploy.
+      - name: Point staging at the new images
+        run: |
+          sha="${{ github.event.workflow_run.head_sha }}"
+          file=deploy/environments/staging/values.yaml
+          yq -i ".images.api.tag = \"$sha\" | .images.scraper.tag = \"$sha\" | .images.web.tag = \"$sha-staging\"" "$file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --quiet && { echo "staging already runs $sha"; exit 0; }
+          git commit -am "deploy(staging): ${sha::7} [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rescope-staging
+  namespace: argocd
+spec:
+  project: rescope
+  source:
+    repoURL: https://github.com/Amboyandrey/ReScope.git
+    targetRevision: main
+    path: deploy/helm/rescope
+    helm:
+      releaseName: rescope
+      ignoreMissingValueFiles: true
+      valueFiles:
+        - ../../environments/staging/values.yaml
+        - ../../environments/staging/sealed-secrets.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rescope-staging
+  syncPolicy:
+    # Every tag bump on main rolls out automatically.
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

@@ -1,6 +1,6 @@
 # Build context: apps/api (see infra/docker-compose.yml).
 
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 RUN pip install --no-cache-dir uv
 # Same path as the runtime WORKDIR: uv bakes absolute interpreter paths into the venv's scripts.
 WORKDIR /app
@@ -12,7 +12,7 @@ COPY app ./app
 COPY alembic.ini ./
 COPY migrations ./migrations
 
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 RUN useradd --create-home --uid 1000 rescope
 WORKDIR /app
 
